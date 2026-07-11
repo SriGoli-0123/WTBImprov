@@ -1,0 +1,931 @@
+[
+  {
+    "id": "wild_tool_bench_0",
+    "available_tools": [
+      "getRealtimeCity",
+      "getHistoricalCity",
+      "getCityForecast",
+      "getRealtimeCityAQI",
+      "getHistoricalCityAQI",
+      "getCityAQIForecast",
+      "getCityShow",
+      "getShowDetail"
+    ],
+    "tasks": [
+      "I want to travel to other places this weekend. Please help me check the weather in Chicago for the two days of the weekend.",
+      "It doesn't look so good. Please help me check Las Vegas again?",
+      "Check the air quality as well. If it's good, then check what special performances are on those two days.",
+      "Where is the specific location?"
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "I want to travel to other places this weekend. Please help me check the weather in Chicago for the two days of the weekend."
+      },
+      {
+        "role": "assistant",
+        "content": "### Weekend Weather Forecast for Chicago\n\n- **July 13, 2024**\n  - Weather: Light rain\n  - Temperature: High 25\u00b0C, Low 18\u00b0C\n  - Humidity: 80%\n\n- **July 14, 2024**\n  - Weather: Moderate rain\n  - Temperature: High 23\u00b0C, Low 17\u00b0C\n  - Humidity: 85%\n\nPlease arrange your travel plans reasonably according to the weather conditions!"
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "It doesn't look so good. Please help me check Las Vegas again?"
+      },
+      {
+        "role": "assistant",
+        "content": "On July 13, 2024, the weather in Las Vegas was sunny, with a maximum temperature of 30\u00b0C and a minimum temperature of 20\u00b0C. On July 14, 2024, the weather was cloudy, with a maximum temperature of 28\u00b0C and a minimum temperature of 18\u00b0C."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Check the air quality as well. If it's good, then check what special performances are on those two days."
+      },
+      {
+        "role": "assistant",
+        "content": "### Las Vegas Weekend Air Quality\n\n- **2024-07-13**: AQI 45, the air quality is good.\n- **2024-07-14**: AQI 50, the air quality is good.\n\n### Las Vegas Weekend Special Performances\n\n1. **Cirque du Soleil**\n   - Date: 2024-07-13\n- Location: MGM Grand\n   - Time: 19:00\n   - Description: A thrilling and artistic circus show suitable for the whole family.\n\n2. **David Copperfield Magic Show**\n   - Date: 2024-07-14\n   - Location: MGM Grand\n   - Time: 21:00\n   - Description: David Copperfield's classic magic show is breathtaking.\n\nHope this information can help you plan a pleasant weekend trip!"
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Where is the specific location?"
+      },
+      {
+        "role": "assistant",
+        "content": "The MGM Grand is located in Las Vegas, Nevada, USA. The specific address is: 3799 South Las Vegas Boulevard, Las Vegas, NV 89109. It is situated on the famous Las Vegas Strip and is one of the most well-known hotels and casinos in the city."
+      },
+      "============================================================"
+    ],
+    "answer_list": [
+      [
+        {
+          "idx": 0,
+          "name": "getCityForecast",
+          "arguments": {
+            "city": "Chicago",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "getCityForecast",
+          "arguments": {
+            "city": "Las Vegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "getCityAQIForecast",
+          "arguments": {
+            "city": "Las Vegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "getCityShow",
+          "arguments": {
+            "city": "LasVegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "dependency_list": [
+            0
+          ]
+        },
+        {
+          "idx": 2,
+          "name": "getShowDetail",
+          "arguments": {
+            "activity_id": "show123"
+          },
+          "dependency_list": [
+            1
+          ]
+        },
+        {
+          "idx": 3,
+          "name": "getShowDetail",
+          "arguments": {
+            "activity_id": "show456"
+          },
+          "dependency_list": [
+            1
+          ]
+        },
+        {
+          "idx": 4,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            2,
+            3
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "chat"
+          },
+          "dependency_list": []
+        }
+      ]
+    ],
+    "task_types": [
+      "Single-Tool",
+      "Single-Tool",
+      "Mixed Multi-Tool",
+      "Chat"
+    ]
+  },
+  {
+    "id": "wild_tool_bench_1",
+    "available_tools": [
+      "getPopulationAndEmploymentData",
+      "getSchoolsAndUniversitiesInfo",
+      "getWeatherForecast",
+      "getParliamentDebates"
+    ],
+    "tasks": [
+      "I would like to know if there have been any debates on environmental protection in the Swiss parliament in the past two months. Could you help me check?",
+      "Artificial Intelligence Security in the Past Three Months",
+      "Have there been any relevant academic reports or discussions on the above two topics in Switzerland in the past two months?",
+      "I want to know what courses related to one of the topics are offered in schools?"
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "I would like to know if there have been any debates on environmental protection in the Swiss parliament in the past two months. Could you help me check?"
+      },
+      {
+        "role": "assistant",
+        "content": "In the past two months, the Swiss parliament has held several debates on the topic of environmental protection. Here are some key debates:\n\n1. **November 15, 2024** - Discussion on Reducing Greenhouse Gas Emissions: Parliament members discussed how to reduce greenhouse gas emissions in Switzerland through legislation, with a focus on emission reduction measures in the transportation and industrial sectors.\n\n2. **November 30, 2024** - The Future of Renewable Energy: The debate centered on how to accelerate the development of renewable energy in Switzerland to reduce dependence on fossil fuels.\n\n3. **December 10, 2024** - Forest Protection and Biodiversity: The parliament discussed the importance of protecting Swiss forests and biodiversity and put forward relevant policy recommendations."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Artificial Intelligence Security in the Past Three Months"
+      },
+      {
+        "role": "assistant",
+        "content": "The records of the Swiss Parliament's debates on artificial intelligence security in the past three months are as follows:\n\n### November 25, 2024\n- **Topic**: Artificial Intelligence Security\n- **Summary**: Discussed the secure application of artificial intelligence in the financial sector, with a focus on data privacy and risk management.\n\n### October 10, 2024\n- **Topic**: Artificial Intelligence Security\n- **Summary**: Debated the use of artificial intelligence in the medical field, especially its impact on patient data security.\n\n### September 5, 2024\n- **Topic**: Artificial Intelligence Security\n- **Summary**: Explored the application of artificial intelligence technology in national security, emphasizing preventive measures against potential threats."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Have there been any relevant academic reports or discussions on the above two topics in Switzerland in the past two months?"
+      },
+      {
+        "role": "assistant",
+        "content": "Regarding the two topics of environmental protection and artificial intelligence safety, I cannot provide real-time specific event arrangements for any relevant academic reports or seminars in Switzerland within the last two months. However, as a country that attaches great importance to environmental protection and technological innovation, Switzerland often holds relevant academic conferences and seminars.\n\nIt is recommended that you can obtain the latest information through the following channels:\n1. Check the websites of major Swiss universities and research institutions, especially those departments focusing on environmental science and artificial intelligence research.\n2. Pay attention to relevant international academic conference websites, such as IEEE and ACM, to see if there are any relevant conferences held in Switzerland.\n3. Use academic social platforms such as ResearchGate or LinkedIn to follow experts and scholars in relevant fields. They usually share information about upcoming conferences and events.\n4. Visit the websites of Swiss government departments or non-governmental organizations related to the environment and technology to check their event announcements.\n\nThrough these channels, you should be able to find the latest academic event information on environmental protection and artificial intelligence safety."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "I want to know what courses related to one of the topics are offered in schools?"
+      },
+      {
+        "role": "assistant",
+        "content": "Please tell me the topic you want to query and the type of school, such as: primary school, secondary school, university."
+      },
+      {
+        "role": "user",
+        "content": "The topic I asked later"
+      },
+      {
+        "role": "assistant",
+        "content": "Please tell me the type of school you want to query, such as: primary school, secondary school, university."
+      },
+      {
+        "role": "user",
+        "content": "The third one"
+      },
+      {
+        "role": "assistant",
+        "content": "In Switzerland, several universities offer courses related to environmental protection and artificial intelligence safety:\n\n1. **ETH Zurich** (Zurich)\n   - **Environmental Science and Engineering** (German): Covers ecosystem management and sustainable development.\n   - **Artificial Intelligence and Safety** (English): Explores the safety and ethical issues of AI technology.\n\n2. **EPFL** (Lausanne)\n   - **Environmental Engineering** (French): Includes water resource management and pollution control technologies.\n   - **Artificial Intelligence Safety** (English): Focuses on the safety and privacy protection of AI systems.\n\n3. **University of Geneva** (Geneva)\n   - **Sustainable Development and Environment** (French): Provides an in-depth study of sustainable development policies and practices.\n   - **AI Ethics and Safety** (English): Explores the ethical issues of AI and its applications in the safety field.\n\nThese courses provide students with a wide range of learning opportunities in the fields of environmental protection and artificial intelligence safety."
+      },
+      "============================================================"
+    ],
+    "answer_list": [
+      [
+        {
+          "idx": 0,
+          "name": "getParliamentDebates",
+          "arguments": {
+            "dateRange": {
+              "endDate": "2024-12-18",
+              "startDate": "2024-10-18"
+            },
+            "topic": "Environmental protection"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "getParliamentDebates",
+          "arguments": {
+            "dateRange": {
+              "endDate": "2024-12-18",
+              "startDate": "2024-09-18"
+            },
+            "topic": "Artificial Intelligence Security"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "chat"
+          },
+          "dependency_list": []
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "type"
+                ],
+                "tool_name": "getSchoolsAndUniversitiesInfo"
+              }
+            ]
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "type"
+                ],
+                "tool_name": "getSchoolsAndUniversitiesInfo"
+              }
+            ]
+          },
+          "dependency_list": [
+            0
+          ]
+        },
+        {
+          "idx": 2,
+          "name": "getSchoolsAndUniversitiesInfo",
+          "arguments": {
+            "keywords": [
+              "Environmental protection",
+              "Artificial intelligence safety"
+            ],
+            "type": "university"
+          },
+          "dependency_list": [
+            1
+          ]
+        },
+        {
+          "idx": 3,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            2
+          ]
+        }
+      ]
+    ],
+    "task_types": [
+      "Single-Tool",
+      "Single-Tool",
+      "Chat",
+      "Clarify"
+    ]
+  },
+  {
+    "id": "wild_tool_bench_2",
+    "available_tools": [
+      "getBudgets",
+      "createTransaction",
+      "syncTransactions",
+      "updateTransaction"
+    ],
+    "tasks": [
+      "Help me look up the budget data for user ID '12345'.",
+      "Create another new transaction record with an amount of 200 yuan, a date of 2024-08-01, and classify it as 'Entertainment Expenses'.",
+      "Then help me synchronize again.",
+      "Please help me update this transaction record. Change the amount to 250 yuan and keep the other information unchanged."
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "Help me look up the budget data for user ID '12345'."
+      },
+      {
+        "role": "assistant",
+        "content": "Successfully retrieved the budget data for user ID \u201c12345\u201d as follows:\n\n**Budget Data**: \n - **Monthly Total Budget**: 5000 yuan\n - **Budget Allocation**: \n    - **Living Expenses**: 2000 yuan\n    - **Entertainment Expenses**: 1000 yuan\n    - **Savings Goal**: 1500 yuan\n    - **Other Miscellaneous**: 500 yuan"
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Create another new transaction record with an amount of 200 yuan, a date of 2024-08-01, and classify it as 'Entertainment Expenses'."
+      },
+      {
+        "role": "assistant",
+        "content": ""
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Then help me synchronize again."
+      },
+      {
+        "role": "assistant",
+        "content": "Transaction records have been synchronized successfully. The newly created transaction record with an amount of 200 yuan, a date of 2024-08-01, and a category of 'Entertainment Expenses' has been successfully synchronized to all relevant databases and associated systems. All terminal devices can obtain the latest data in real time."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Please help me update this transaction record. Change the amount to 250 yuan and keep the other information unchanged."
+      },
+      {
+        "role": "assistant",
+        "content": "The transaction record has been updated successfully. The amount has been successfully modified from the original amount to 250 yuan, and the date \u201c2024-08-01\u201d and category \u201cEntertainment Expenses\u201d remain unchanged."
+      },
+      "============================================================"
+    ],
+    "answer_list": [
+      [
+        {
+          "idx": 0,
+          "name": "getBudgets",
+          "arguments": {
+            "user_id": "12345"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "createTransaction",
+          "arguments": {
+            "account_id": "12345",
+            "amount": 200,
+            "category_name": "Entertainment Expenses",
+            "date": "2024-08-01"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "syncTransactions",
+          "arguments": {
+            "user_id": "12345"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "updateTransaction",
+          "arguments": {
+            "account_id": "12345",
+            "amount": 250,
+            "date": "2024-08-01",
+            "transaction_id": "TX20240801153428765432001"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ]
+    ],
+    "task_types": [
+      "Single-Tool",
+      "Single-Tool",
+      "Single-Tool",
+      "Single-Tool"
+    ]
+  },
+  {
+    "id": "wild_tool_bench_3",
+    "available_tools": [
+      "getDetailedInfoByIP",
+      "getDomainByIP",
+      "getLocationByIP"
+    ],
+    "tasks": [
+      "I found a suspicious IP address 123.456.78.90. Please provide detailed location information about this IP address, including time zone, currency, and population.",
+      "125.532.55.09 Time Zone, Currency 228.121.22.88 Currency, Population ",
+      "I have a visitor who is from one of the above IP addresses. I want to know where he is from.",
+      "I also want to know another IP address."
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "I found a suspicious IP address 123.456.78.90. Please provide detailed location information about this IP address, including time zone, currency, and population."
+      },
+      {
+        "role": "assistant",
+        "content": "### Detailed IP Address Information\n\n- **IP Address**: 123.456.78.90\n- **Time Zone**: UTC+8\n- **Currency**: CNY\n- **Population**: 1.4 billion\n\nThe above is the detailed location information about this IP address."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "125.532.55.09 Time Zone, Currency 228.121.22.88 Currency, Population "
+      },
+      {
+        "role": "assistant",
+        "content": "### Detailed IP Address Information\n\n- **IP Address**: 125.532.55.09\n  - **Time Zone**: UTC+9\n  - **Currency**: JPY\n\n- **IP Address**: 228.121.22.88\n  - **Currency**: USD\n  - **Population**: 330 million\n\nThe above is the detailed location information about these IP addresses."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "I have a visitor who is from one of the above IP addresses. I want to know where he is from."
+      },
+      {
+        "role": "assistant",
+        "content": "Hello, could you please provide the visitor's IP address?"
+      },
+      {
+        "role": "user",
+        "content": "The second one among the above three"
+      },
+      {
+        "role": "assistant",
+        "content": "### IP Address Details\n\n- **IP Address**: 125.532.55.09\n  - **Country**: Japan\n  - **City**: Tokyo\n  - **Postal Code**: 100-0001\n  - **Latitude**: 35.6895\n  - **Longitude**: 139.6917\n\nThe above is the detailed location information of this IP address."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "I also want to know another IP address."
+      },
+      {
+        "role": "assistant",
+        "content": "Please provide the IP address you want to query."
+      },
+      {
+        "role": "user",
+        "content": "129.222"
+      },
+      {
+        "role": "assistant",
+        "content": "Please provide the complete IP address to obtain its geographical location information."
+      },
+      {
+        "role": "user",
+        "content": "The second half is 66.08"
+      },
+      {
+        "role": "assistant",
+        "content": "### Detailed IP Address Information\n\n- **IP Address**: 129.222.66.08\n  - **Country**: United States\n  - **City**: Los Angeles\n  - **Postal Code**: 90001\n  - **Latitude**: 34.0522\n  - **Longitude**: -118.2437\n\nThe above is the detailed location information about this IP address."
+      },
+      "============================================================"
+    ],
+    "answer_list": [
+      [
+        {
+          "idx": 0,
+          "name": "getDetailedInfoByIP",
+          "arguments": {
+            "ip": "123.456.78.90"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "getDetailedInfoByIP",
+          "arguments": {
+            "fields": [
+              "timezone",
+              "currency"
+            ],
+            "ip": "125.532.55.09"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "getDetailedInfoByIP",
+          "arguments": {
+            "fields": [
+              "currency",
+              "population"
+            ],
+            "ip": "228.121.22.88"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 2,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0,
+            1
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "ip"
+                ],
+                "tool_name": "getLocationByIP"
+              }
+            ]
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "getLocationByIP",
+          "arguments": {
+            "ip": "125.532.55.09"
+          },
+          "dependency_list": [
+            0
+          ]
+        },
+        {
+          "idx": 2,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            1
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "ip"
+                ],
+                "tool_name": "getLocationByIP"
+              }
+            ]
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "ip"
+                ],
+                "tool_name": "getLocationByIP"
+              }
+            ]
+          },
+          "dependency_list": [
+            0
+          ]
+        },
+        {
+          "idx": 2,
+          "name": "getLocationByIP",
+          "arguments": {
+            "ip": "129.222.66.08"
+          },
+          "dependency_list": [
+            1
+          ]
+        },
+        {
+          "idx": 3,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            2
+          ]
+        }
+      ]
+    ],
+    "task_types": [
+      "Single-Tool",
+      "Parallel Multi-Tool",
+      "Clarify",
+      "Clarify"
+    ]
+  },
+  {
+    "id": "wild_tool_bench_4",
+    "available_tools": [
+      "biometricLogin",
+      "emailLogin",
+      "twoFactorAuthentication",
+      "customizeLoginScreen",
+      "userActivityReport"
+    ],
+    "tasks": [
+      "I need to access the company's security system. Here is my biometric data: 4f3b9c6d7a2b8e5f1c3d2e4b5a6f7e8d, and the device ID of my work phone: a1b2c3d4e5f6g7h8. Additionally, my email is 882864252@163.com, my user ID is 12345, and I also have a program with ID PRG-2023-09-15-XYZ123",
+      "ok, then proceed with email verification",
+      "Okay, I've been researching users these days. I need an analysis report. Also, I want to modify the existing screen to SimSun font and color #555602.",
+      "I need to set up two-factor authentication for my account. My mobile phone number is +123456789."
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "I need to access the company's security system. Here is my biometric data: 4f3b9c6d7a2b8e5f1c3d2e4b5a6f7e8d, and the device ID of my work phone: a1b2c3d4e5f6g7h8. Additionally, my email is 882864252@163.com, my user ID is 12345, and I also have a program with ID PRG-2023-09-15-XYZ123"
+      },
+      {
+        "role": "assistant",
+        "content": "### Login Successful\n\nYou have successfully logged in using biometric data and device ID. Here is your login information:\n\n- **User ID**: user-12345\n- **Session Token**: abc123xyz456\n\nPlease keep your session token safe to ensure the security of your account."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "ok, then proceed with email verification"
+      },
+      {
+        "role": "assistant",
+        "content": "### Email Verification\n\nA one-time login link has been successfully sent to your email `882864252@163.com`. Please use the link to log in within 10 minutes."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "Okay, I've been researching users these days. I need an analysis report. Also, I want to modify the existing screen to SimSun font and color #555602."
+      },
+      {
+        "role": "assistant",
+        "content": "### User Analysis Report\n\nYour user analysis report has been generated. Here is the activity data for the past 30 days:\n\n- **Login Attempts**: 150\n- **Successful Logins**: 120\n- **Failed Logins**: 30\n\n### Login Screen Customization\n\nYour login screen has been successfully updated to the SimSun font with a primary color of #555602."
+      },
+      "============================================================",
+      {
+        "role": "user",
+        "content": "I need to set up two-factor authentication for my account. My mobile phone number is +123456789."
+      },
+      {
+        "role": "assistant",
+        "content": "Please provide the two-factor authentication method you want to use, such as 'SMS' or 'Email', so that I can set up two-factor authentication for you."
+      },
+      {
+        "role": "user",
+        "content": "The first one then"
+      },
+      {
+        "role": "assistant",
+        "content": "### Two-factor authentication set up successfully\n\nTwo-factor authentication has been successfully set up for your account. The authentication code will be sent to your mobile phone number +123456789 via SMS. Please ensure that your mobile phone can receive text messages to complete the authentication process."
+      },
+      "============================================================"
+    ],
+    "answer_list": [
+      [
+        {
+          "idx": 0,
+          "name": "biometricLogin",
+          "arguments": {
+            "biometricData": "4f3b9c6d7a2b8e5f1c3d2e4b5a6f7e8d",
+            "deviceID": "a1b2c3d4e5f6g7h8"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "emailLogin",
+          "arguments": {
+            "email": "882864252@163.com"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "userActivityReport",
+          "arguments": {
+            "appID": "PRG-2023-09-15-XYZ123"
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "customizeLoginScreen",
+          "arguments": {
+            "appID": "PRG-2023-09-15-XYZ123",
+            "theme": {
+              "fontFamily": "SimSun",
+              "primaryColor": "#555602"
+            }
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 2,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            0,
+            1
+          ]
+        }
+      ],
+      [
+        {
+          "idx": 0,
+          "name": "ask_user_for_required_parameters",
+          "arguments": {
+            "tool_list": [
+              {
+                "missing_required_parameters": [
+                  "method"
+                ],
+                "tool_name": "twoFactorAuthentication"
+              }
+            ]
+          },
+          "dependency_list": []
+        },
+        {
+          "idx": 1,
+          "name": "twoFactorAuthentication",
+          "arguments": {
+            "method": "SMS",
+            "sendTo": "123456789",
+            "userID": "12345"
+          },
+          "dependency_list": [
+            0
+          ]
+        },
+        {
+          "idx": 2,
+          "name": "prepare_to_answer",
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "dependency_list": [
+            1
+          ]
+        }
+      ]
+    ],
+    "task_types": [
+      "Single-Tool",
+      "Single-Tool",
+      "Parallel Multi-Tool",
+      "Clarify"
+    ]
+  }
+]

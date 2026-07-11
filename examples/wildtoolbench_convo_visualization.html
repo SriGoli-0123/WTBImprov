@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WildToolBench: Multi-Turn Agentic Challenges</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: rgba(17, 24, 39, 0.7);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --user-bubble: #1e293b;
+      --agent-success: #10b981;
+      --agent-fail: #ef4444;
+      --tool-bg: #111827;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.15);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1100px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 2.2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #a5b4fc, #6366f1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    /* Challenge Overview Badges */
+    .badges-row {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 15px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: 99px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: #cbd5e1;
+    }
+
+    .badge strong {
+      color: var(--accent);
+    }
+
+    /* Main Visual Grid */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      margin-top: 20px;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
+    }
+
+    .card.failure-track {
+      border-top: 4px solid var(--agent-fail);
+    }
+
+    .card.success-track {
+      border-top: 4px solid var(--agent-success);
+      box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .card-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.3rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .failure-track .status-dot {
+      background-color: var(--agent-fail);
+      box-shadow: 0 0 10px var(--agent-fail);
+    }
+
+    .success-track .status-dot {
+      background-color: var(--agent-success);
+      box-shadow: 0 0 10px var(--agent-success);
+    }
+
+    /* Dialogue Stream */
+    .dialogue-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      flex-grow: 1;
+    }
+
+    .turn-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .turn-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Chat Bubbles */
+    .bubble {
+      padding: 12px 16px;
+      border-radius: 16px;
+      max-width: 90%;
+      font-size: 0.9rem;
+    }
+
+    .bubble.user {
+      background-color: var(--user-bubble);
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+
+    .bubble.agent {
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .failure-track .bubble.agent {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.05));
+      border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+
+    .success-track .bubble.agent {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.05));
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+
+    /* Tool Call Card styling */
+    .tool-box {
+      font-family: 'Space Grotesk', sans-serif;
+      background-color: var(--tool-bg);
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 0.8rem;
+      border: 1px solid rgba(255,255,255,0.05);
+      margin-top: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tool-header {
+      font-weight: 700;
+      color: #a5b4fc;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .tool-header .tool-status {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .failure-track .tool-status {
+      background-color: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+
+    .success-track .tool-status {
+      background-color: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    .tool-code {
+      font-family: 'Courier New', Courier, monospace;
+      color: #e2e8f0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Explanation box */
+    .explanation {
+      background: rgba(255,255,255,0.02);
+      border-left: 3px solid var(--accent);
+      padding: 10px 14px;
+      font-size: 0.8rem;
+      border-radius: 4px;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+
+    .explanation strong {
+      color: #e2e8f0;
+    }
+
+    /* Evaluation Metric Box at Bottom */
+    .eval-section {
+      margin-top: 40px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .eval-grid {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 15px;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+
+    .eval-metric {
+      flex: 1;
+      min-width: 200px;
+    }
+
+    .eval-value {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .eval-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>WildToolBench Challenge Visualization</h1>
+      <p class="subtitle">An Agentic Security Access Dialog (Example 4) showing SOTA Failure vs. Correct Execution</p>
+      <div class="badges-row">
+        <span class="badge">Challenge 1: <strong>Implicit Intent</strong> (Cross-Turn Context)</span>
+        <span class="badge">Challenge 2: <strong>Instruction Transition</strong> (Policy Switch)</span>
+        <span class="badge">Challenge 3: <strong>Parallel Tool Topology</strong></span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- FAILURE TRACK -->
+      <div class="card failure-track">
+        <div class="card-title">
+          <div class="status-dot"></div>
+          Baseline Model Failure (Typical LLM)
+        </div>
+
+        <div class="dialogue-stream">
+          <!-- TURN 0 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 0</div>
+            <div class="bubble user">I need to access the company's security system. Here is my biometric data: 4f3b9..., user phone ID: a1b2c..., email: 882864252@163.com, user ID: 12345, and program ID: PRG-2023-09-15-XYZ123</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>biometricLogin()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">biometricLogin(biometricData="4f3b9...", deviceID="a1b2c...")</div>
+            </div>
+          </div>
+
+          <!-- TURN 1 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 1</div>
+            <div class="bubble user">ok, then proceed with email verification</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>emailLogin()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">emailLogin(email="882864252@163.com")</div>
+            </div>
+            <div class="explanation">
+              <strong>Context Tracking:</strong> Successfully parsed the email from Turn 0 context.
+            </div>
+          </div>
+
+          <!-- TURN 2 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 2 (Context Drift Breakpoint)</div>
+            <div class="bubble user">Okay, I've been researching users these days. I need an analysis report. Also, I want to modify the existing screen to SimSun font and color #555602.</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>userActivityReport()</span>
+                <span class="tool-status">Error</span>
+              </div>
+              <div class="tool-code">userActivityReport(appID="unknown")</div>
+            </div>
+            <div class="explanation">
+              <strong>CONTEXT DRIFT FAILURE:</strong> The model failed to retrieve the <code>PRG-2023-09-15-XYZ123</code> program ID provided in Turn 0. It hallucinated "unknown" or output a blank parameter, terminating execution.
+            </div>
+          </div>
+
+          <!-- TURN 3 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 3 (Policy Breakpoint)</div>
+            <div class="bubble user">I need to set up two-factor authentication for my account. My mobile phone number is +123456789.</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>twoFactorAuthentication()</span>
+                <span class="tool-status">Error</span>
+              </div>
+              <div class="tool-code">twoFactorAuthentication(method="Email", sendTo="123456789", userID="12345")</div>
+            </div>
+            <div class="explanation">
+              <strong>EAGER EXECUTION FAILURE:</strong> The tool requires a <code>method</code> selection (SMS/Email/Authenticator). Rather than switching policies to ask the user, the model guesses "Email" (which conflicts with the mobile phone number argument) and fails.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUCCESS TRACK (ORCHESTRATED POLICY) -->
+      <div class="card success-track">
+        <div class="card-title">
+          <div class="status-dot"></div>
+          Orchestrated RL Agent (Target Behavior)
+        </div>
+
+        <div class="dialogue-stream">
+          <!-- TURN 0 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 0</div>
+            <div class="bubble user">I need to access the company's security system. Here is my biometric data: 4f3b9..., user phone ID: a1b2c..., email: 882864252@163.com, user ID: 12345, and program ID: PRG-2023-09-15-XYZ123</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>biometricLogin()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">biometricLogin(biometricData="4f3b9...", deviceID="a1b2c...")</div>
+            </div>
+          </div>
+
+          <!-- TURN 1 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 1</div>
+            <div class="bubble user">ok, then proceed with email verification</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>emailLogin()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">emailLogin(email="882864252@163.com")</div>
+            </div>
+          </div>
+
+          <!-- TURN 2 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 2</div>
+            <div class="bubble user">Okay, I've been researching users these days. I need an analysis report. Also, I want to modify the existing screen to SimSun font and color #555602.</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>Parallel execution [DAG]</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">userActivityReport(appID="PRG-2023-09-15-XYZ123")
+customizeLoginScreen(appID="PRG-2023-09-15-XYZ123", theme={"fontFamily": "SimSun", "primaryColor": "#555602"})</div>
+            </div>
+            <div class="explanation">
+              <strong>Parallel Multi-Tool:</strong> Retrieved <code>PRG-XYZ</code> correctly from the past dialogue state and executed both operations simultaneously.
+            </div>
+          </div>
+
+          <!-- TURN 3 -->
+          <div class="turn-block">
+            <div class="turn-label">Turn 3</div>
+            <div class="bubble user">I need to set up two-factor authentication for my account. My mobile phone number is +123456789.</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>ask_user_for_required_parameters()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">ask_user_for_required_parameters(missing=["method"], tool="twoFactorAuthentication")</div>
+            </div>
+            <div class="bubble agent">To set up 2FA, please confirm which verification method you prefer: SMS, Email, or Authenticator App.</div>
+            <div class="bubble user">I prefer SMS verification.</div>
+            <div class="tool-box">
+              <div class="tool-header">
+                <span>twoFactorAuthentication()</span>
+                <span class="tool-status">Correct</span>
+              </div>
+              <div class="tool-code">twoFactorAuthentication(method="SMS", sendTo="123456789", userID="12345")</div>
+            </div>
+            <div class="explanation">
+              <strong>Policy Transition:</strong> Successfully switched policy modes from tool execution to clarification loop, retrieved the User ID <code>12345</code>, and executed safely.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Evals Explanation -->
+    <div class="eval-section">
+      <div style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; margin-bottom: 8px;">WildToolBench Evaluation Mechanics</div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); max-width: 800px; margin: 0 auto 15px;">
+        WildToolBench measures model ability over entire multi-turn trajectories using two key metrics. 
+        Most models fail due to self-conditioning biases in conversational loops.
+      </p>
+      <div class="eval-grid">
+        <div class="eval-metric">
+          <div class="eval-value">Optimal Path (OP)</div>
+          <div class="eval-label">Evaluates if the agent chose the shortest topological path in the action DAG.</div>
+        </div>
+        <div class="eval-metric">
+          <div class="eval-value">Accomplish Progress (AP)</div>
+          <div class="eval-label">Measures what fraction of the target tasks were successfully resolved.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,9 @@
+ipdb
+requests
+pandas
+openai
+dotenv
+overrides
+tenacity==8.2.2
+jieba==0.42.1
+rouge==1.0.1

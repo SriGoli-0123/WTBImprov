@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WildToolBench - Benchmarking LLM Tool-Use in the Wild</title>
+  <meta name="description" content="WildToolBench: A comprehensive benchmark grounded in real-world user behavior patterns for evaluating LLM tool-use capabilities. ICLR 2026." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+:root {
+  --bg:#ffffff;--bg2:#f8f9fc;--card:#ffffff;--card-h:#f3f4ff;
+  --border:rgba(0,0,0,.08);--border-h:rgba(0,0,0,.15);
+  --text:#1a1a2e;--text2:#4b5563;--muted:#6b7280;
+  --pri:#4f46e5;--pri-l:#4f46e5;--pri-bg:rgba(79,70,229,.06);
+  --green:#059669;--amber:#d97706;--rose:#e11d48;--cyan:#0891b2;
+  --grad:linear-gradient(135deg,#4f46e5,#7c3aed,#8b5cf6);
+  --font:'Inter',-apple-system,sans-serif;--mono:'JetBrains Mono',monospace;
+  --r:12px;--rl:20px;--sidebar-w:260px;--topbar-h:56px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased}
+a{color:var(--pri-l);text-decoration:none;transition:color .2s}
+a:hover{color:#7c3aed}
+
+/* ===== Top Bar ===== */
+.topbar{position:fixed;top:0;left:0;right:0;height:var(--topbar-h);background:rgba(255,255,255,.92);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);z-index:200;display:flex;align-items:center;padding:0 20px;gap:16px}
+.topbar-brand{font-weight:800;font-size:1.15rem;color:var(--text);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.topbar-right{margin-left:auto;display:flex;gap:12px;align-items:center}
+.topbar-right a{font-size:.85rem;color:var(--text2);font-weight:500;display:flex;align-items:center;gap:5px;padding:6px 12px;border-radius:8px;transition:all .15s}
+.topbar-right a:hover{background:var(--pri-bg);color:var(--pri)}
+.topbar-right .btn-sm{background:var(--grad);color:#fff;padding:6px 14px;border-radius:8px;font-size:.82rem;font-weight:600}
+.topbar-right .btn-sm:hover{opacity:.9;color:#fff}
+.mobile-toggle{display:none;background:none;border:none;font-size:1.3rem;color:var(--text);cursor:pointer;padding:4px}
+
+/* ===== Layout ===== */
+.app{display:flex;height:100vh;padding-top:var(--topbar-h)}
+
+/* ===== Sidebar ===== */
+.sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);height:calc(100vh - var(--topbar-h));overflow-y:auto;border-right:1px solid var(--border);background:var(--bg2);padding:20px 0;position:sticky;top:var(--topbar-h);flex-shrink:0}
+.sidebar::-webkit-scrollbar{width:4px}
+.sidebar::-webkit-scrollbar-thumb{background:rgba(0,0,0,.1);border-radius:4px}
+.sidebar-group{margin-bottom:8px}
+.sidebar-group-title{padding:6px 20px;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:.88rem;font-weight:500;color:var(--text2);cursor:pointer;transition:all .15s;border-left:3px solid transparent;user-select:none}
+.sidebar-item:hover{background:rgba(79,70,229,.04);color:var(--text)}
+.sidebar-item.active{background:var(--pri-bg);color:var(--pri);border-left-color:var(--pri);font-weight:600}
+.sidebar-item i{width:18px;text-align:center;font-size:.85rem;opacity:.7}
+.sidebar-item.active i{opacity:1}
+
+/* ===== Content ===== */
+.content{flex:1;height:calc(100vh - var(--topbar-h));overflow-y:auto;overflow-x:hidden}
+.content::-webkit-scrollbar{width:6px}
+.content::-webkit-scrollbar-thumb{background:rgba(0,0,0,.08);border-radius:6px}
+.page{display:none;animation:fadeIn .3s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.page-inner{max-width:1100px;margin:0 auto;padding:40px 48px 80px}
+.page-inner.wide{max-width:1400px}
+
+/* ===== Common ===== */
+.sec-label{display:inline-flex;align-items:center;gap:6px;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--pri);margin-bottom:10px}
+.sec-title{font-size:2rem;font-weight:800;letter-spacing:-.02em;margin-bottom:12px;color:var(--text)}
+.sec-desc{color:var(--text2);font-size:1.05rem;margin-bottom:36px;max-width:720px;line-height:1.8}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:10px;font-size:.95rem;font-weight:600;transition:all .25s;cursor:pointer;border:none}
+.btn-primary{background:var(--grad);color:#fff;box-shadow:0 4px 16px rgba(79,70,229,.2)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(79,70,229,.3);color:#fff}
+.btn-outline{background:rgba(0,0,0,.03);color:var(--text);border:1px solid var(--border)}
+.btn-outline:hover{background:var(--pri-bg);border-color:rgba(79,70,229,.2);color:var(--pri)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:600}
+.badge-single{background:rgba(79,70,229,.08);color:var(--pri)}
+.badge-multi{background:rgba(217,119,6,.08);color:var(--amber)}
+.badge-chat{background:rgba(5,150,105,.08);color:var(--green)}
+.badge-clarify{background:rgba(225,29,72,.07);color:var(--rose)}
+.badge-correct{background:rgba(5,150,105,.08);color:var(--green)}
+.badge-incorrect{background:rgba(225,29,72,.07);color:var(--rose)}
+.badge-subtype{background:rgba(8,145,178,.07);color:var(--cyan);font-size:.68rem;padding:2px 6px;border-radius:3px;margin-right:4px}
+
+/* ===== Introduction (Hero) ===== */
+.hero-wrap{text-align:center;padding:32px 0 0}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;background:rgba(79,70,229,.07);border:1px solid rgba(79,70,229,.18);border-radius:999px;font-size:.85rem;font-weight:600;color:var(--pri);margin-bottom:24px}
+.hero-wrap h1{font-size:clamp(2.2rem,5vw,3.4rem);font-weight:900;line-height:1.15;letter-spacing:-.03em;margin-bottom:10px}
+.hero-wrap h1 .grad-text{background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero-wrap .subtitle{font-size:1.15rem;color:var(--text2);max-width:680px;margin:0 auto 32px}
+.hero-buttons{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-bottom:40px}
+.hero-stats{display:flex;gap:40px;justify-content:center;flex-wrap:wrap;padding:28px 0;border-top:1px solid var(--border);margin-top:8px}
+.hero-stat{text-align:center}
+.hero-stat .num{font-size:2rem;font-weight:800;color:var(--text)}
+.hero-stat .label{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+
+/* ===== Overview ===== */
+.overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+.overview-text p{color:var(--text2);font-size:1rem;margin-bottom:16px;line-height:1.8}
+.overview-image{border-radius:var(--rl);overflow:hidden;border:1px solid var(--border);box-shadow:0 2px 12px rgba(0,0,0,.06)}
+.overview-image img{width:100%;display:block}
+
+/* ===== Features ===== */
+.features-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.feature-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:28px;transition:all .3s;box-shadow:0 1px 3px rgba(0,0,0,.03)}
+.feature-card:hover{border-color:var(--border-h);background:var(--card-h);transform:translateY(-3px);box-shadow:0 6px 20px rgba(79,70,229,.08)}
+.feature-card .icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;margin-bottom:16px}
+.feature-card:nth-child(1) .icon{background:rgba(79,70,229,.08);color:var(--pri)}
+.feature-card:nth-child(2) .icon{background:rgba(5,150,105,.08);color:var(--green)}
+.feature-card:nth-child(3) .icon{background:rgba(217,119,6,.08);color:var(--amber)}
+.feature-card h3{font-size:1.05rem;font-weight:700;margin-bottom:8px}
+.feature-card p{color:var(--text2);font-size:.9rem;line-height:1.7}
+
+/* ===== Tables ===== */
+.lb-controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.tab-btn{padding:7px 18px;border-radius:8px;background:rgba(0,0,0,.03);border:1px solid var(--border);color:var(--text2);font-size:.83rem;font-weight:600;cursor:pointer;transition:all .15s;font-family:var(--font)}
+.tab-btn.active,.tab-btn:hover{background:var(--pri-bg);border-color:rgba(79,70,229,.2);color:var(--pri)}
+.table-wrap{overflow-x:auto;border-radius:var(--r);border:1px solid var(--border);background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:.83rem}
+thead{background:var(--bg2)}
+th{padding:10px 12px;text-align:left;font-weight:600;color:var(--muted);text-transform:uppercase;font-size:.68rem;letter-spacing:.08em;white-space:nowrap;border-bottom:1px solid var(--border)}
+td{padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr{transition:background .15s}
+tbody tr:hover{background:rgba(79,70,229,.03)}
+tbody tr:last-child td{border-bottom:none}
+.rank-badge{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;font-weight:700;font-size:.78rem}
+.rank-1{background:rgba(217,119,6,.1);color:var(--amber)}
+.rank-2{background:rgba(107,114,128,.08);color:#6b7280}
+.rank-3{background:rgba(180,120,60,.08);color:#b4783c}
+.model-name{font-weight:600;color:var(--text)}
+.model-type{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.68rem;font-weight:600;text-transform:uppercase}
+.type-prop{background:rgba(79,70,229,.08);color:var(--pri)}
+.type-open{background:rgba(5,150,105,.08);color:var(--green)}
+.type-spec{background:rgba(217,119,6,.08);color:var(--amber)}
+.score-best{color:var(--green);font-weight:700}
+.score-cell{font-family:var(--mono);font-size:.8rem}
+.cat-header td{background:rgba(79,70,229,.04);font-weight:700;color:var(--pri);font-size:.8rem;letter-spacing:.03em}
+
+/* ===== Statistics ===== */
+.stats-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:40px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:24px;text-align:center;transition:all .3s}
+.stat-card:hover{border-color:var(--border-h);transform:translateY(-3px)}
+.stat-card .stat-num{font-size:2.2rem;font-weight:900;margin-bottom:2px;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stat-card .stat-label{font-size:.82rem;color:var(--muted);font-weight:500}
+
+/* ===== Task Browser ===== */
+.browser-controls{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;align-items:center}
+.browser-controls select,.browser-controls input{background:var(--card);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:.83rem;font-family:var(--font);outline:none}
+.browser-controls select:focus,.browser-controls input:focus{border-color:rgba(79,70,229,.35)}
+.browser-controls input{flex:1;min-width:180px}
+.session-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
+.session-header{padding:14px 20px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer;transition:background .15s}
+.session-header:hover{background:rgba(79,70,229,.03)}
+.session-id{font-family:var(--mono);font-weight:700;font-size:.83rem;color:var(--pri)}
+.session-env{font-size:.76rem;color:var(--muted)}
+.session-body{padding:0;max-height:0;overflow:hidden;transition:max-height .4s ease}
+.session-body.open{max-height:none;padding:16px 20px}
+.task-block{margin-bottom:16px;padding:14px;background:var(--bg2);border-radius:10px;border:1px solid var(--border)}
+.task-header{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.task-num{font-weight:700;font-size:.83rem;color:var(--text)}
+.task-text{font-size:.88rem;margin-bottom:4px}
+.task-text-zh{color:var(--text)}
+.task-text-en{color:var(--text2);font-style:italic}
+.traj-section{margin-top:10px}
+.traj-toggle{background:none;border:1px solid var(--border);color:var(--text2);padding:4px 12px;border-radius:6px;font-size:.76rem;cursor:pointer;font-family:var(--font);transition:all .15s}
+.traj-toggle:hover{background:var(--pri-bg);border-color:rgba(79,70,229,.2);color:var(--pri)}
+.traj-content{display:none;margin-top:8px;padding:10px;background:var(--bg2);border-radius:8px;font-family:var(--mono);font-size:.76rem;line-height:1.8;overflow-x:auto;border:1px solid var(--border)}
+.traj-content.open{display:block}
+.traj-step{margin-bottom:6px;padding:7px 10px;border-radius:6px}
+.traj-tc{background:rgba(5,150,105,.04);border-left:3px solid var(--green);color:var(--green)}
+.traj-out{background:rgba(8,145,178,.04);border-left:3px solid var(--cyan);color:var(--text2)}
+.traj-label{font-weight:700;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.pagination{display:flex;gap:6px;justify-content:center;margin-top:20px;flex-wrap:wrap}
+.page-btn{padding:5px 12px;border-radius:6px;background:rgba(0,0,0,.03);border:1px solid var(--border);color:var(--text2);font-size:.83rem;cursor:pointer;font-family:var(--font);transition:all .15s}
+.page-btn.active,.page-btn:hover{background:var(--pri-bg);border-color:rgba(79,70,229,.2);color:var(--pri)}
+.page-btn:disabled{opacity:.3;cursor:default}
+
+/* ===== Conversation Messages ===== */
+.conv-msg{margin-bottom:10px;padding:10px 14px;border-radius:8px;font-size:.88rem;line-height:1.7}
+.conv-user{background:rgba(79,70,229,.05);border-left:3px solid var(--pri)}
+.conv-assistant{background:rgba(5,150,105,.04);border-left:3px solid var(--green)}
+.conv-role{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.conv-user .conv-role{color:var(--pri)}
+.conv-assistant .conv-role{color:var(--green)}
+.conv-assistant .md-content{font-size:.85rem;line-height:1.8}
+.conv-assistant .md-content h1,.conv-assistant .md-content h2,.conv-assistant .md-content h3{font-size:1rem;font-weight:700;margin:8px 0 4px}
+.conv-assistant .md-content ul,.conv-assistant .md-content ol{padding-left:20px;margin:4px 0}
+.conv-assistant .md-content li{margin-bottom:2px}
+.conv-assistant .md-content strong{color:var(--text)}
+.conv-assistant .md-content code{background:rgba(0,0,0,.05);padding:1px 4px;border-radius:3px;font-size:.82rem}
+.lang-toggle{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:.82rem}
+.lang-toggle button{padding:6px 16px;border:none;background:transparent;color:var(--text2);font-weight:600;cursor:pointer;font-family:var(--font);transition:all .15s}
+.lang-toggle button.active{background:var(--pri);color:#fff}
+
+/* ===== Citation ===== */
+.citation-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:24px;position:relative}
+.citation-box pre{font-family:var(--mono);font-size:.82rem;color:var(--text2);white-space:pre-wrap;word-break:break-all;line-height:1.8}
+.copy-btn{position:absolute;top:14px;right:14px;background:rgba(0,0,0,.04);border:1px solid var(--border);border-radius:8px;padding:6px 12px;color:var(--text2);font-size:.78rem;font-weight:500;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px}
+.copy-btn:hover{background:var(--pri-bg);color:var(--pri)}
+
+/* ===== Responsive ===== */
+@media(max-width:1024px){.features-grid{grid-template-columns:1fr 1fr}.stats-grid{grid-template-columns:repeat(3,1fr)}.overview-grid{grid-template-columns:1fr}}
+@media(max-width:768px){
+  .sidebar{position:fixed;left:-280px;top:var(--topbar-h);z-index:150;width:280px;min-width:280px;transition:left .3s;box-shadow:4px 0 24px rgba(0,0,0,.1)}
+  .sidebar.open{left:0}
+  .sidebar-overlay{display:none;position:fixed;inset:0;top:var(--topbar-h);background:rgba(0,0,0,.3);z-index:140}
+  .sidebar-overlay.open{display:block}
+  .mobile-toggle{display:block}
+  .topbar-right a:not(.btn-sm){display:none}
+  .features-grid{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .page-inner{padding:24px 20px 60px}
+  .hero-wrap h1{font-size:1.8rem}
+  .hero-stats{gap:20px}
+  .hero-stat .num{font-size:1.5rem}
+}
+@media(max-width:480px){.stats-grid{grid-template-columns:1fr}.hero-buttons{flex-direction:column;align-items:center}}
+  </style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <button class="mobile-toggle" id="mobileToggle"><i class="fas fa-bars"></i></button>
+  <a href="#" class="topbar-brand" onclick="navigate('introduction');return false">&#128295; WildToolBench</a>
+  <div class="topbar-right">
+    <a href="https://openreview.net/forum?id=yz7fL5vfpn" target="_blank"><i class="fas fa-file-alt"></i> Paper</a>
+    <a href="https://github.com/yupeijei1997/WildToolBench/tree/main/wild-tool-bench/data" target="_blank"><i class="fas fa-database"></i> Dataset</a>
+    <a href="https://github.com/yupeijei1997/WildToolBench" target="_blank" class="btn-sm"><i class="fab fa-github"></i> GitHub</a>
+  </div>
+</div>
+
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Getting Started</div>
+      <div class="sidebar-item active" data-page="introduction"><i class="fas fa-home"></i> Introduction</div>
+      <div class="sidebar-item" data-page="overview"><i class="fas fa-info-circle"></i> Overview</div>
+      <div class="sidebar-item" data-page="challenges"><i class="fas fa-bolt"></i> Key Challenges</div>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Results</div>
+      <div class="sidebar-item" data-page="leaderboard"><i class="fas fa-trophy"></i> Leaderboard</div>
+      <div class="sidebar-item" data-page="orchestration"><i class="fas fa-project-diagram"></i> Tool Orchestration</div>
+      <div class="sidebar-item" data-page="errors"><i class="fas fa-bug"></i> Error Analysis</div>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Data</div>
+      <div class="sidebar-item" data-page="statistics"><i class="fas fa-chart-bar"></i> Statistics</div>
+      <div class="sidebar-item" data-page="tasks"><i class="fas fa-database"></i> Tasks</div>
+      <div class="sidebar-item" data-page="trajectories"><i class="fas fa-route"></i> Trajectory Visualizer</div>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Reference</div>
+      <div class="sidebar-item" data-page="citation"><i class="fas fa-quote-left"></i> Citation</div>
+    </div>
+  </aside>
+
+  <!-- Content Area -->
+  <main class="content" id="contentArea">
+
+    <!-- ===== Introduction ===== -->
+    <div class="page active" id="page-introduction">
+      <div class="page-inner">
+        <div class="hero-wrap">
+          <div class="hero-badge"><i class="fas fa-award"></i> Accepted at ICLR 2026</div>
+          <h1>Benchmarking LLM Tool-Use<br/><span class="grad-text">in the Wild</span></h1>
+          <p class="subtitle">A comprehensive benchmark grounded in real-world user behavior patterns, revealing that no LLM achieves more than 15% session accuracy on wild tool-use scenarios.</p>
+          <div class="hero-buttons">
+            <a href="https://openreview.net/forum?id=yz7fL5vfpn" class="btn btn-primary" target="_blank"><i class="fas fa-file-alt"></i> Paper (ICLR 2026)</a>
+            <a href="https://github.com/yupeijei1997/WildToolBench" class="btn btn-outline" target="_blank"><i class="fab fa-github"></i> Code</a>
+            <a href="https://github.com/yupeijei1997/WildToolBench/tree/main/wild-tool-bench/data" class="btn btn-outline" target="_blank"><i class="fas fa-database"></i> Dataset</a>
+            <a href="#" class="btn btn-outline" onclick="navigate('leaderboard');return false"><i class="fas fa-trophy"></i> Leaderboard</a>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat"><div class="num">57</div><div class="label">LLMs Evaluated</div></div>
+            <div class="hero-stat"><div class="num">1,024</div><div class="label">Tasks</div></div>
+            <div class="hero-stat"><div class="num">256</div><div class="label">Sessions</div></div>
+            <div class="hero-stat"><div class="num">1,600+</div><div class="label">APIs</div></div>
+            <div class="hero-stat"><div class="num">&lt;15%</div><div class="label">Best Session Acc.</div></div>
+          </div>
+        </div>
+        <!-- Abstract -->
+        <div style="margin-top:48px;padding:28px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r)">
+          <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:12px"><i class="fas fa-scroll" style="color:var(--pri)"></i> Abstract</h3>
+          <p style="color:var(--text2);font-size:.95rem;line-height:1.9">Fulfilling user needs through Large Language Model multi-turn, multi-step tool-use is rarely a straightforward process. Real user interactions are inherently wild, being intricate, messy, and flexible. We identify three key challenges from user behaviour: <strong>compositional tasks</strong> that demand efficient orchestration of tool-call topologies, <strong>implicit intent</strong> spread across dialogue turns that require contextual inference, and <strong>instruction transition</strong>, which mixes task queries, clarifications, and casual conversation, forcing LLMs to adjust their policies on the fly. Existing benchmarks overlook these behaviors, making the apparent progress of LLMs on tool-use spurious. To address this, we introduce WildToolBench, an LLM tool-use benchmark grounded in real-world user behavior patterns. Comprehensive evaluations of 57 LLMs reveal that no model achieves an accuracy of more than 15%, indicating a substantial gap in the robustness of LLMs' agentic ability.</p>
+        </div>
+        <!-- Design Philosophy -->
+        <div style="margin-top:32px;padding:28px;background:rgba(79,70,229,.03);border:1px solid rgba(79,70,229,.12);border-radius:var(--r)">
+          <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:12px;color:var(--pri)"><i class="fas fa-lightbulb"></i> Design Philosophy</h3>
+          <p style="color:var(--text2);font-size:.95rem;line-height:1.9;margin-bottom:12px"><em>"What truly challenges LLMs' tool-use capabilities is not artificially constructed complex scenarios, but simple yet realistic user behaviors"</em> &mdash; namely, the <strong>compositionality</strong>, <strong>vagueness</strong>, and <strong>variability</strong> of user instructions.</p>
+          <p style="color:var(--text2);font-size:.95rem;line-height:1.9">Through a carefully constructed data pipeline combined with human verification and annotation (9 human experts over 1 month, 4 rounds of quality checks reaching 100% accuracy), we curate 256 scenarios with 1,024 tasks from 400 tool lists covering 1,600+ APIs.</p>
+        </div>
+        <!-- Figure: Session Accuracy Comparison -->
+        <div style="margin-top:32px">
+          <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:16px"><i class="fas fa-chart-line" style="color:var(--pri)"></i> Session Accuracy Comparison Among Benchmarks</h3>
+          <div class="overview-image"><img src="assets/benchmark_comparison.png" alt="Session Accuracy comparison among tool-use benchmarks" loading="lazy" /></div>
+          <p style="margin-top:10px;font-size:.82rem;color:var(--muted);text-align:center">Figure 1: While prior tool-use benchmarks tend to be saturated, WildToolBench remains highly challenging.</p>
+        </div>
+        <!-- Figure: Three Characteristics -->
+        <div style="margin-top:32px">
+          <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:16px"><i class="fas fa-users" style="color:var(--pri)"></i> Natural for the User, Challenging for the LLM</h3>
+          <div class="overview-image"><img src="assets/first.png" alt="WildToolBench three characteristics" loading="lazy" /></div>
+          <p style="margin-top:10px;font-size:.82rem;color:var(--muted);text-align:center">Figure 2: WildToolBench poses three characteristics that seem easy and natural for the user, but challenging for the LLM tool-use.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Overview ===== -->
+    <div class="page" id="page-overview">
+      <div class="page-inner">
+        <span class="sec-label"><i class="fas fa-info-circle"></i> Overview</span>
+        <h2 class="sec-title">Why WildToolBench?</h2>
+        <div class="overview-grid" style="margin-bottom:40px">
+          <div class="overview-text">
+            <p>Fulfilling user needs through LLM multi-turn, multi-step tool-use is rarely a straightforward process. Real user interactions are inherently <strong>wild</strong> &mdash; intricate, messy, and flexible.</p>
+            <p>We identify three key challenges from user behaviour: <strong style="color:var(--pri)">compositional tasks</strong> that demand efficient orchestration of tool-call topologies, <strong style="color:var(--green)">implicit intent</strong> spread across dialogue turns requiring contextual inference, and <strong style="color:var(--amber)">instruction transition</strong> that mixes task queries, clarifications, and casual conversation.</p>
+            <p>Existing benchmarks overlook these behaviors, making the apparent progress of LLMs on tool-use <strong style="color:var(--rose)">spurious</strong>. We curate <strong>256 scenarios with 1,024 tasks</strong> covering <strong>1,600+ APIs</strong> from 400 tool lists. Evaluations of <strong>57 LLMs</strong> show no model exceeds 15% session accuracy.</p>
+          </div>
+          <div class="overview-image">
+            <img src="assets/benchmark_comparison.png" alt="WildToolBench benchmark comparison" loading="lazy" />
+          </div>
+        </div>
+        <!-- Formulation -->
+        <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:12px">Formulation</h3>
+        <p style="color:var(--text2);font-size:.95rem;line-height:1.9;margin-bottom:16px">We formalize the interaction between a user and an LLM as a multi-turn dialogue <em>D = {u<sub>1</sub>, a<sub>1</sub>, u<sub>2</sub>, a<sub>2</sub>, ..., u<sub>N</sub>, a<sub>N</sub>}</em>. Within this N-turn dialogue, there are M user tasks <em>{g<sub>1</sub>, ..., g<sub>M</sub>}</em> scattered throughout. The LLM needs to detect the user's intention and solve each task, which may require multi-step tool invocations forming a DAG <em>T<sup>j</sup> = {a<sup>T</sup><sub>1</sub>, e<sub>1</sub>, ..., a<sup>T</sup><sub>S</sub>, e<sub>S</sub>}</em>.</p>
+        <p style="color:var(--text2);font-size:.95rem;line-height:1.9;margin-bottom:16px">User tasks are categorized into four types: <strong>g<sub>single</sub></strong> (single tool call), <strong>g<sub>multi</sub></strong> (multi-step tool calls), <strong>g<sub>chat</sub></strong> (direct question answering, S=0), and <strong>g<sub>clarify</sub></strong> (requiring clarification). The LLM must switch policies on the fly as user intentions transition.</p>
+        <!-- Data Curation -->
+        <h3 style="font-size:1.2rem;font-weight:700;margin:28px 0 12px">Data Curation Pipeline</h3>
+        <p style="color:var(--text2);font-size:.95rem;line-height:1.9;margin-bottom:16px">The data curation pipeline follows three steps:</p>
+        <ol style="color:var(--text2);font-size:.95rem;line-height:2;margin-bottom:20px;padding-left:20px">
+          <li><strong>Scenario Curation:</strong> We analyzed a large collection of real user logs to extract seed scenarios and summarize user behavior patterns. These patterns are used as few-shot examples, ensuring WildToolBench follows the same distribution as real logs without leaking user data.</li>
+          <li><strong>Task Curation:</strong> Following ToolAlpaca, we collected 1,600+ publicly available APIs from the internet, covering 400 tool lists. For each scenario, we selected a tool subset and generated four tasks with controlled task types. Human experts refined each task.</li>
+          <li><strong>Multi-Agent Simulation:</strong> We used a multi-agent system to generate initial trajectories. Each tool invocation was manually examined by 9 human experts and annotated as ground truth, producing the final dataset over 4 quality rounds.</li>
+        </ol>
+        <div class="overview-image" style="margin-bottom:12px"><img src="assets/data_curation.png" alt="Data curation pipeline" loading="lazy" /></div>
+        <p style="font-size:.82rem;color:var(--muted);text-align:center">The data curation pipeline of WildToolBench.</p>
+        <!-- Benchmark Comparison Table -->
+        <h3 style="font-size:1.2rem;font-weight:700;margin:28px 0 12px">Comparison with Prior Benchmarks</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Benchmark</th><th>Contextual Multi-Task</th><th>Hidden Info %</th><th>Instruction Transition %</th><th>Sequential</th><th>Parallel</th><th>Mixed</th></tr></thead>
+            <tbody>
+              <tr><td class="model-name">WildToolBench</td><td>&#10003;</td><td>100%</td><td>100%</td><td>&#10003;</td><td>&#10003;</td><td>&#10003;</td></tr>
+              <tr><td>BFCL v3</td><td>&#10003;</td><td>15.7%</td><td>39.7%</td><td>&times;</td><td>&#10003;</td><td>&times;</td></tr>
+              <tr><td>BFCL v2</td><td>&times;</td><td>0.0%</td><td>0.0%</td><td>&times;</td><td>&#10003;</td><td>&times;</td></tr>
+              <tr><td>ToolBench</td><td>&times;</td><td>0.0%</td><td>0.0%</td><td>&#10003;</td><td>&times;</td><td>&times;</td></tr>
+              <tr><td>&tau;-bench</td><td>&times;</td><td>0.0%</td><td>0.0%</td><td>&#10003;</td><td>&times;</td><td>&times;</td></tr>
+              <tr><td>&tau;<sup>2</sup>-bench</td><td>&times;</td><td>0.0%</td><td>0.0%</td><td>&#10003;</td><td>&times;</td><td>&times;</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Key Challenges ===== -->
+    <div class="page" id="page-challenges">
+      <div class="page-inner">
+        <span class="sec-label"><i class="fas fa-bolt"></i> Key Challenges</span>
+        <h2 class="sec-title">Three Wild Dimensions of User Behavior</h2>
+        <p class="sec-desc">We identify three key challenges from real user behavior that existing benchmarks fail to capture.</p>
+        <div class="features-grid" style="margin-bottom:40px">
+          <div class="feature-card">
+            <div class="icon"><i class="fas fa-project-diagram"></i></div>
+            <h3>Challenge 1: Compositional Tasks</h3>
+            <p>Multiple simple requirements combined into single instructions, demanding tool orchestration beyond simple chaining &mdash; sequential, parallel, and mixed topologies. WildToolBench uses an <strong>enumerate-match-score</strong> pipeline: enumerate all valid tool execution paths via DFS topological sorting, then match each LLM tool call against the decision tree, and finally score with <strong>Optimal Path Rate (OP)</strong> and <strong>Accomplish Progress Rate (AP)</strong>.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><i class="fas fa-comment-dots"></i></div>
+            <h3>Challenge 2: Implicit Intent</h3>
+            <p>User intent spread across dialogue turns requiring contextual inference via three strategies: <strong>Partial Information</strong> (omitted info from prior turns), <strong>Coreferential Reference</strong> (pronouns/ellipsis referring to earlier entities), and <strong>Long-Range Dependency</strong> (missing info in distant turns, i&minus;j&gt;2).</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><i class="fas fa-random"></i></div>
+            <h3>Challenge 3: Instruction Transition</h3>
+            <p>Users naturally transition between task-giving, follow-up, clarification, and casual chatting. Each scenario balances four task types (g<sub>single</sub>, g<sub>multi</sub>, g<sub>chat</sub>, g<sub>clarify</sub>) with controlled switching frequency. Up to 3 transitions can occur within 4 tasks, and accuracy drops up to 30% as transitions increase.</p>
+          </div>
+        </div>
+        <!-- Tool Orchestration Figure -->
+        <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:16px">Enumerate-Match-Score Pipeline</h3>
+        <div class="overview-image" style="margin-bottom:10px"><img src="assets/tool_orchestration.png" alt="Tool orchestration evaluation pipeline" loading="lazy" /></div>
+        <p style="font-size:.82rem;color:var(--muted);text-align:center;margin-bottom:32px">Visualization of the enumerate-match-score pipeline for evaluating tool orchestration ability.</p>
+        <!-- Hidden Intention & Transition Figure -->
+        <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:16px">Examples for Hidden Intention &amp; Instruction Transition</h3>
+        <div class="overview-image" style="margin-bottom:10px"><img src="assets/c2c3.png" alt="Hidden intention and instruction transition examples" loading="lazy" /></div>
+        <p style="font-size:.82rem;color:var(--muted);text-align:center;margin-bottom:32px">These challenges arise from the very nature of real user behavior: the interaction is a coherent dialogue rather than isolated task submissions.</p>
+      </div>
+    </div>
+
+    <!-- ===== Leaderboard ===== -->
+    <div class="page" id="page-leaderboard">
+      <div class="page-inner wide">
+        <span class="sec-label"><i class="fas fa-trophy"></i> Leaderboard</span>
+        <h2 class="sec-title">Model Performance</h2>
+        <p class="sec-desc">Task Accuracy and Session Accuracy across task types and task order.</p>
+        <div class="lb-controls" id="lbMainControls">
+          <button class="tab-btn active" onclick="toggleLB('main','short')">Main Results</button>
+          <button class="tab-btn" onclick="toggleLB('main','full')">Full Results (57 Models)</button>
+        </div>
+        <div class="table-wrap" id="lbMainWrap"></div>
+        <p style="margin-top:14px;font-size:.8rem;color:var(--muted)"><i class="fas fa-info-circle"></i> g<sub>single</sub>=Single-Tool, g<sub>multi</sub>=Multi-Tool, g<sub>clarify</sub>=Clarification, g<sub>chat</sub>=Chat. Tasks 1-4 = task order in session.</p>
+      </div>
+    </div>
+
+    <!-- ===== Tool Orchestration ===== -->
+    <div class="page" id="page-orchestration">
+      <div class="page-inner wide">
+        <span class="sec-label"><i class="fas fa-project-diagram"></i> Tool Orchestration</span>
+        <h2 class="sec-title">Tool Orchestration Evaluation</h2>
+        <p class="sec-desc">How well LLMs orchestrate parallel, sequential, and mixed tool-call topologies for compositional tasks.</p>
+        <div class="lb-controls" id="lbOrchControls">
+          <button class="tab-btn active" onclick="toggleLB('orch','short')">Main Results</button>
+          <button class="tab-btn" onclick="toggleLB('orch','full')">Full Results (57 Models)</button>
+        </div>
+        <div class="table-wrap" id="lbOrchWrap"></div>
+        <p style="margin-top:14px;font-size:.8rem;color:var(--muted)"><i class="fas fa-info-circle"></i> AP Rate = Accomplish Progress Rate. OP Rate = Optimal Path Rate. Higher is better.</p>
+      </div>
+    </div>
+
+    <!-- ===== Error Analysis ===== -->
+    <div class="page" id="page-errors">
+      <div class="page-inner wide">
+        <span class="sec-label"><i class="fas fa-bug"></i> Error Analysis</span>
+        <h2 class="sec-title">Error Distribution Analysis</h2>
+        <p class="sec-desc">Distribution of action errors and parameter errors. Values are percentages of total errors.</p>
+        <div class="lb-controls" id="lbErrorControls">
+          <button class="tab-btn active" onclick="toggleLB('error','short')">Main Results</button>
+          <button class="tab-btn" onclick="toggleLB('error','full')">Full Results (57 Models)</button>
+        </div>
+        <div class="table-wrap" id="lbErrorWrap"></div>
+        <p style="margin-top:14px;font-size:.8rem;color:var(--muted)"><i class="fas fa-info-circle"></i> Action Errors: Refusal, Wrong Name/Missing Info, Wrong Refusal, Redundant Call, Call Error, Early Termination. Parameter Errors: Type Error, Hallucination, Value Error.</p>
+      </div>
+    </div>
+
+    <!-- ===== Statistics ===== -->
+    <div class="page" id="page-statistics">
+      <div class="page-inner">
+        <span class="sec-label"><i class="fas fa-chart-bar"></i> Statistics</span>
+        <h2 class="sec-title">Benchmark at a Glance</h2>
+        <p class="sec-desc">WildToolBench features comprehensive coverage of real-world tool-use scenarios across 8 major categories and 24 subcategories.</p>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-num">256</div><div class="stat-label">Sessions</div></div>
+          <div class="stat-card"><div class="stat-num">1,024</div><div class="stat-label">Tasks</div></div>
+          <div class="stat-card"><div class="stat-num">1,600+</div><div class="stat-label">APIs</div></div>
+          <div class="stat-card"><div class="stat-num">57</div><div class="stat-label">LLMs</div></div>
+          <div class="stat-card"><div class="stat-num">618</div><div class="stat-label">Unique Tools</div></div>
+        </div>
+        <!-- Statistics images from paper -->
+        <div style="margin-top:40px">
+          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:16px"><i class="fas fa-chart-pie" style="color:var(--pri)"></i> Detailed Distributions</h3>
+          <div class="overview-image"><img src="assets/statistics.png" alt="WildToolBench detailed statistics" loading="lazy" /></div>
+          <p style="font-size:.82rem;color:var(--muted);text-align:center;margin-top:10px">Distribution of user message types, contextual challenges, tool parameters, dialogue turns, tool call counts, and tool types.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Tasks (Dataset Browser) ===== -->
+    <div class="page" id="page-tasks">
+      <div class="page-inner wide">
+        <span class="sec-label"><i class="fas fa-database"></i> Dataset</span>
+        <h2 class="sec-title">Browse All 256 Sessions</h2>
+        <p class="sec-desc">Explore the full WildToolBench dataset. Each session contains 4 tasks with tool definitions, gold-standard action sequences (DAGs), and observations.</p>
+        <div class="browser-controls">
+          <div class="lang-toggle" id="langToggle">
+            <button class="active" data-lang="en">English</button>
+            <button data-lang="zh">中文</button>
+          </div>
+          <select id="typeFilter"><option value="all">All Task Types</option><option value="Single-Tool">Single-Tool</option><option value="Multi-Tool">Multi-Tool</option><option value="Parallel Multi-Tool">Parallel Multi-Tool</option><option value="Sequential Multi-Tool">Sequential Multi-Tool</option><option value="Mixed Multi-Tool">Mixed Multi-Tool</option><option value="Chat">Chat</option><option value="Clarify">Clarify</option></select>
+          <input type="text" id="searchInput" placeholder="Search tasks by keyword..." />
+        </div>
+        <div id="tasksList"></div>
+        <div class="pagination" id="tasksPagination"></div>
+      </div>
+    </div>
+
+    <!-- ===== Trajectory Visualizer ===== -->
+    <div class="page" id="page-trajectories">
+      <div class="page-inner wide">
+        <span class="sec-label"><i class="fas fa-route"></i> Trajectory Visualizer</span>
+        <h2 class="sec-title">Inference Trajectories</h2>
+        <p class="sec-desc">Step-by-step visualization of model inference, including tool calls, reasoning, outputs, latency, and per-step correctness labels.</p>
+        <div class="browser-controls">
+          <select id="trajModel" style="font-weight:600"><option value="hunyuan-2.0-thinking">Hunyuan-2.0-Thinking</option></select>
+          <select id="trajSession"></select>
+          <select id="trajTask"><option value="all">All Tasks</option><option value="0">Task 1</option><option value="1">Task 2</option><option value="2">Task 3</option><option value="3">Task 4</option></select>
+          <select id="trajFilter"><option value="all">All Results</option><option value="correct">Correct Only</option><option value="error">Incorrect Only</option></select>
+        </div>
+        <div id="trajContent"></div>
+      </div>
+    </div>
+
+    <!-- ===== Citation ===== -->
+    <div class="page" id="page-citation">
+      <div class="page-inner">
+        <span class="sec-label"><i class="fas fa-quote-left"></i> Citation</span>
+        <h2 class="sec-title">Cite Our Work</h2>
+        <p class="sec-desc">If you find WildToolBench useful in your research, please consider citing our paper.</p>
+        <div class="citation-box">
+          <button class="copy-btn" id="copyBtn" onclick="copyBibtex()"><i class="far fa-copy"></i> Copy</button>
+          <pre id="bibtex">@inproceedings{
+  yu2026wildtoolbench,
+  title={Benchmarking {LLM} Tool-Use in the Wild},
+  author={Peijie Yu and Wei Liu and Yifan Yang and Jinjian Li and Zelong Zhang and Xiao Feng and Feng Zhang},
+  booktitle={The Fourteenth International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=yz7fL5vfpn}
+}</pre>
+        </div>
+        <div style="margin-top:32px;padding-top:24px;border-top:1px solid var(--border);text-align:center">
+          <div style="display:flex;gap:20px;justify-content:center;margin-bottom:12px;flex-wrap:wrap">
+            <a href="https://github.com/yupeijei1997/WildToolBench" target="_blank" style="color:var(--muted)"><i class="fab fa-github"></i> GitHub</a>
+            <a href="https://openreview.net/forum?id=yz7fL5vfpn" target="_blank" style="color:var(--muted)"><i class="fas fa-file-alt"></i> Paper</a>
+            <a href="https://github.com/yupeijei1997/WildToolBench/tree/main/wild-tool-bench/data" target="_blank" style="color:var(--muted)"><i class="fas fa-database"></i> Dataset</a>
+            <a href="mailto:peijieyu@tencent.com" style="color:var(--muted)"><i class="fas fa-envelope"></i> Contact</a>
+          </div>
+          <p style="color:var(--muted);font-size:.8rem">&copy; 2026 WildToolBench Team (Tencent &amp; King's College London)</p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script src="tasks_data.js"></script>
+<script src="traj_data.js"></script>
+<script>
+// ===== Navigation =====
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sidebar-item').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById('page-' + page);
+  if (el) { el.classList.add('active'); }
+  const si = document.querySelector(`.sidebar-item[data-page="${page}"]`);
+  if (si) si.classList.add('active');
+  document.getElementById('contentArea').scrollTop = 0;
+  // Close mobile sidebar
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
+  // Update hash
+  history.replaceState(null, '', '#/' + page);
+  // Lazy init tasks page
+  if (page === 'tasks' && !tasksInited) { tasksInited = true; filterTasks(); }
+  if (page === 'trajectories' && !trajInited) { trajInited = true; initTraj(); }
+}
+
+document.querySelectorAll('.sidebar-item').forEach(item => {
+  item.addEventListener('click', () => navigate(item.dataset.page));
+});
+
+// Mobile sidebar
+document.getElementById('mobileToggle').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+});
+document.getElementById('sidebarOverlay').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
+});
+
+// Hash routing
+function handleHash() {
+  const hash = location.hash.replace('#/', '').replace('#', '');
+  if (hash && document.getElementById('page-' + hash)) navigate(hash);
+}
+window.addEventListener('hashchange', handleHash);
+if (location.hash) handleHash();
+
+// ===== Logo Mapping =====
+function getModelLogo(name) {
+  const n = name || '';
+  if (/^Gemini/i.test(n)) return 'Google.png';
+  if (/^Claude/i.test(n)) return 'Anthropic.png';
+  if (/^(o1|o3|o4-mini|GPT)/i.test(n)) return 'OpenAI.png';
+  if (/^Grok/i.test(n)) return 'Grok.png';
+  if (/^Mistral/i.test(n)) return 'mistral.png';
+  if (/^Doubao/i.test(n)) return 'doubao.png';
+  if (/^GLM/i.test(n)) return 'Zhipu.png';
+  if (/^Kimi/i.test(n)) return 'Kimi.png';
+  if (/^DeepSeek/i.test(n)) return 'DeepSeek.png';
+  if (/^Qwen/i.test(n)) return 'Qwen.png';
+  if (/^Llama/i.test(n)) return 'meta.png';
+  if (/^xLAM/i.test(n)) return 'xLAM.png';
+  if (/^ToolACE/i.test(n)) return 'ToolACE.png';
+  if (/^Watt/i.test(n)) return 'Watt.png';
+  if (/^Hammer/i.test(n)) return 'Hammer.png';
+  return '';
+}
+
+// ===== Leaderboard Data =====
+// SHORT = main body paper tables; FULL = appendix (all 57 models)
+
+const LB_MAIN_SHORT=[
+{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",single:56.64,multi:40.23,clarify:52.34,chat:94.92,t1:78.13,t2:63.67,t3:51.95,t4:50.39,task:61.04,session:14.45},
+{m:"Gemini-2.5-Pro",t:"prop",single:55.08,multi:36.33,clarify:46.88,chat:86.72,t1:70.31,t2:56.64,t3:53.52,t4:44.53,task:56.25,session:14.06},
+{m:"Claude-4-Sonnet",t:"prop",single:60.16,multi:43.75,clarify:41.80,chat:80.47,t1:71.09,t2:57.81,t3:52.73,t4:44.53,task:56.54,session:12.50},
+{m:"o1",t:"prop",single:54.30,multi:39.06,clarify:48.05,chat:93.75,t1:69.53,t2:60.94,t3:55.86,t4:48.83,task:58.79,session:12.11},
+{m:"GPT-4o",t:"prop",single:60.16,multi:41.80,clarify:39.45,chat:78.13,t1:72.66,t2:55.08,t3:46.09,t4:45.70,task:54.88,session:11.72},
+{m:"Grok-4",t:"prop",single:59.38,multi:41.41,clarify:33.59,chat:66.02,t1:63.67,t2:52.34,t3:42.97,t4:41.41,task:50.10,session:10.16},
+{m:"GPT-5",t:"prop",single:46.09,multi:34.38,clarify:31.64,chat:84.38,t1:62.11,t2:50.00,t3:45.31,t4:39.06,task:49.12,session:5.86},
+{cat:"Open-Source General Models",m:"GLM-4.5",t:"open",single:57.81,multi:40.63,clarify:44.53,chat:81.25,t1:70.70,t2:60.16,t3:50.78,t4:42.58,task:56.05,session:12.11},
+{m:"Kimi-K2",t:"open",single:54.30,multi:33.98,clarify:39.84,chat:86.72,t1:68.75,t2:57.03,t3:48.83,t4:40.23,task:53.71,session:10.55},
+{m:"DeepSeek-R1",t:"open",single:56.25,multi:41.02,clarify:43.75,chat:80.08,t1:74.22,t2:54.30,t3:48.83,t4:43.75,task:55.27,session:9.38},
+{m:"DeepSeek-V3",t:"open",single:58.98,multi:38.67,clarify:33.59,chat:79.30,t1:75.39,t2:53.91,t3:41.02,t4:40.23,task:52.64,session:9.38},
+{m:"Qwen3-32B-Thinking",t:"open",single:53.52,multi:28.91,clarify:37.11,chat:80.86,t1:62.50,t2:52.73,t3:46.48,t4:38.67,task:50.10,session:7.81},
+{cat:"Open-Source Specialized Models",m:"xLAM-2-70B",t:"spec",single:64.45,multi:36.72,clarify:28.91,chat:64.84,t1:64.06,t2:51.56,t3:42.58,t4:36.72,task:48.73,session:7.81},
+{m:"ToolACE2-8B",t:"spec",single:62.11,multi:37.89,clarify:33.98,chat:84.38,t1:72.27,t2:59.38,t3:46.88,t4:39.84,task:54.59,session:7.42},
+{m:"Watt-8B",t:"spec",single:61.72,multi:28.13,clarify:22.66,chat:78.13,t1:68.75,t2:47.27,t3:39.06,t4:35.55,task:47.66,session:4.69},
+{m:"Hammer2.1-7B",t:"spec",single:40.23,multi:21.88,clarify:30.47,chat:94.92,t1:61.72,t2:46.88,t3:40.63,t4:38.28,task:46.88,session:4.69}
+];
+
+const LB_MAIN_FULL=[{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",single:56.64,multi:40.23,clarify:52.34,chat:94.92,t1:78.13,t2:63.67,t3:51.95,t4:50.39,task:61.04,session:14.45},{m:"Gemini-2.5-Pro",t:"prop",single:55.08,multi:36.33,clarify:46.88,chat:86.72,t1:70.31,t2:56.64,t3:53.52,t4:44.53,task:56.25,session:14.06},{m:"Claude-4-Sonnet",t:"prop",single:60.16,multi:43.75,clarify:41.80,chat:80.47,t1:71.09,t2:57.81,t3:52.73,t4:44.53,task:56.54,session:12.50},{m:"o1",t:"prop",single:54.30,multi:39.06,clarify:48.05,chat:93.75,t1:69.53,t2:60.94,t3:55.86,t4:48.83,task:58.79,session:12.11},{m:"GPT-4o",t:"prop",single:60.16,multi:41.80,clarify:39.45,chat:78.13,t1:72.66,t2:55.08,t3:46.09,t4:45.70,task:54.88,session:11.72},{m:"Claude-3.7-Sonnet",t:"prop",single:57.81,multi:39.06,clarify:41.41,chat:63.28,t1:60.55,t2:52.34,t3:48.05,t4:42.97,task:50.39,session:11.33},{m:"o3",t:"prop",single:61.72,multi:39.45,clarify:44.92,chat:81.64,t1:73.83,t2:60.94,t3:49.22,t4:43.75,task:56.93,session:10.16},{m:"Grok-4",t:"prop",single:59.38,multi:41.41,clarify:33.59,chat:66.02,t1:63.67,t2:50.00,t3:42.97,t4:41.41,task:50.10,session:10.16},{m:"Claude-4.1-Opus",t:"prop",single:55.86,multi:39.84,clarify:41.80,chat:82.42,t1:69.92,t2:55.08,t3:50.39,t4:44.53,task:54.98,session:9.38},{m:"GPT-4.1",t:"prop",single:57.42,multi:44.14,clarify:34.38,chat:81.25,t1:69.53,t2:58.20,t3:46.88,t4:42.58,task:54.30,session:8.98},{m:"Mistral-Large",t:"prop",single:56.25,multi:36.33,clarify:37.50,chat:68.75,t1:67.58,t2:48.83,t3:44.14,t4:38.28,task:49.71,session:7.03},{m:"Doubao-1.6",t:"prop",single:55.86,multi:40.23,clarify:31.25,chat:63.28,t1:69.14,t2:48.83,t3:40.23,t4:32.42,task:47.66,session:7.03},{m:"Doubao-1.5-Thinking",t:"prop",single:60.16,multi:22.66,clarify:26.95,chat:75.39,t1:65.63,t2:47.66,t3:40.23,t4:31.64,task:46.29,session:6.64},{m:"GPT-5",t:"prop",single:46.09,multi:34.38,clarify:31.64,chat:84.38,t1:62.11,t2:50.00,t3:45.31,t4:39.06,task:49.12,session:5.86},{m:"Doubao-1.6-Thinking",t:"prop",single:57.42,multi:34.38,clarify:18.75,chat:47.27,t1:57.03,t2:39.06,t3:31.25,t4:30.47,task:39.45,session:3.13},{m:"Doubao-1.5",t:"prop",single:58.59,multi:24.61,clarify:9.38,chat:34.38,t1:39.45,t2:28.91,t3:29.30,t4:29.30,task:31.74,session:0.78},{cat:"Open-Source General Models",m:"GLM-4.5",t:"open",single:57.81,multi:40.63,clarify:44.53,chat:81.25,t1:70.70,t2:60.16,t3:50.78,t4:42.58,task:56.05,session:12.11},{m:"Kimi-K2",t:"open",single:54.30,multi:33.98,clarify:39.84,chat:86.72,t1:68.75,t2:57.03,t3:48.83,t4:40.23,task:53.71,session:10.55},{m:"Qwen3-30B-A3B",t:"open",single:48.05,multi:28.13,clarify:41.41,chat:89.06,t1:69.92,t2:51.56,t3:48.05,t4:37.11,task:51.66,session:9.77},{m:"Qwen3-14B-Thinking",t:"open",single:56.64,multi:30.47,clarify:37.11,chat:88.67,t1:69.53,t2:54.30,t3:50.39,t4:38.67,task:53.22,session:9.38},{m:"DeepSeek-R1",t:"open",single:56.25,multi:41.02,clarify:43.75,chat:80.08,t1:74.22,t2:54.30,t3:48.83,t4:43.75,task:55.27,session:9.38},{m:"DeepSeek-V3",t:"open",single:58.98,multi:38.67,clarify:33.59,chat:79.30,t1:75.39,t2:53.91,t3:41.02,t4:40.23,task:52.64,session:9.38},{m:"Qwen3-8B-Thinking",t:"open",single:56.64,multi:33.59,clarify:39.84,chat:87.11,t1:73.05,t2:55.08,t3:48.83,t4:40.23,task:54.30,session:8.98},{m:"DeepSeek-V3.1",t:"open",single:44.92,multi:40.63,clarify:33.98,chat:81.25,t1:61.33,t2:51.56,t3:45.70,t4:42.19,task:50.20,session:8.98},{m:"Qwen3-32B",t:"open",single:57.81,multi:33.20,clarify:39.84,chat:79.69,t1:69.53,t2:54.30,t3:46.48,t4:40.23,task:52.64,session:8.59},{m:"Qwen2.5-14B-Instruct",t:"open",single:50.39,multi:27.34,clarify:32.81,chat:83.20,t1:66.41,t2:48.44,t3:40.63,t4:38.28,task:48.44,session:7.81},{m:"Qwen3-14B",t:"open",single:56.25,multi:31.25,clarify:39.84,chat:89.06,t1:71.09,t2:54.30,t3:50.39,t4:40.63,task:54.10,session:7.81},{m:"Qwen3-32B-Thinking",t:"open",single:53.52,multi:28.91,clarify:37.11,chat:80.86,t1:62.50,t2:52.73,t3:46.48,t4:38.67,task:50.10,session:7.81},{m:"Qwen3-4B-Thinking",t:"open",single:60.16,multi:28.91,clarify:38.67,chat:87.89,t1:68.75,t2:59.38,t3:44.14,t4:43.36,task:53.91,session:7.81},{m:"Qwen2.5-72B-Instruct",t:"open",single:58.98,multi:32.03,clarify:34.38,chat:82.81,t1:70.70,t2:50.00,t3:46.48,t4:41.02,task:52.05,session:6.25},{m:"Qwen3-8B",t:"open",single:60.16,multi:26.17,clarify:26.95,chat:79.30,t1:66.02,t2:48.44,t3:39.45,t4:38.67,task:48.14,session:6.25},{m:"Qwen3-30B-A3B-Thinking",t:"open",single:50.39,multi:24.61,clarify:38.67,chat:89.45,t1:71.88,t2:49.22,t3:44.14,t4:37.89,task:50.78,session:6.25},{m:"Qwen3-1.7B-Thinking",t:"open",single:49.22,multi:24.61,clarify:30.08,chat:84.38,t1:68.75,t2:46.09,t3:41.80,t4:31.64,task:47.07,session:6.25},{m:"Qwen2.5-32B-Instruct",t:"open",single:53.91,multi:38.67,clarify:36.72,chat:82.81,t1:69.14,t2:54.30,t3:48.83,t4:39.84,task:53.03,session:5.86},{m:"Qwen3-4B",t:"open",single:51.17,multi:22.66,clarify:35.94,chat:86.33,t1:69.14,t2:49.22,t3:39.06,t4:38.67,task:49.02,session:5.86},{m:"Qwen2.5-7B-Instruct",t:"open",single:52.73,multi:25.39,clarify:28.91,chat:73.05,t1:64.06,t2:45.31,t3:37.50,t4:33.20,task:45.02,session:4.30},{m:"Qwen2.5-3B-Instruct",t:"open",single:48.83,multi:18.36,clarify:20.70,chat:73.83,t1:55.86,t2:41.41,t3:33.59,t4:30.86,task:40.43,session:4.30},{m:"Qwen3-1.7B",t:"open",single:48.05,multi:19.53,clarify:26.95,chat:81.64,t1:67.58,t2:44.14,t3:33.98,t4:30.47,task:44.04,session:4.30},{m:"Qwen2.5-1.5B-Instruct",t:"open",single:36.72,multi:13.28,clarify:21.48,chat:90.23,t1:60.16,t2:39.06,t3:31.64,t4:30.86,task:40.43,session:3.91},{m:"Qwen3-0.6B-Thinking",t:"open",single:44.92,multi:16.02,clarify:23.05,chat:87.11,t1:66.02,t2:40.23,t3:35.55,t4:29.30,task:42.77,session:3.91},{m:"Qwen3-0.6B",t:"open",single:46.09,multi:7.81,clarify:12.11,chat:78.13,t1:53.91,t2:34.38,t3:26.56,t4:29.30,task:36.04,session:3.52},{m:"Qwen2.5-0.5B-Instruct",t:"open",single:23.83,multi:4.69,clarify:15.23,chat:82.03,t1:43.75,t2:29.69,t3:26.95,t4:25.39,task:31.45,session:0.78},{m:"Llama-3.3-3B-Instruct",t:"open",single:0.00,multi:0.00,clarify:0.39,chat:64.84,t1:21.88,t2:17.19,t3:14.45,t4:11.72,task:16.31,session:0.39},{m:"Llama-3.3-1B-Instruct",t:"open",single:0.00,multi:0.00,clarify:0.39,chat:61.33,t1:17.58,t2:18.75,t3:14.06,t4:11.33,task:15.43,session:0.39},{m:"Llama-3.3-70B-Instruct",t:"open",single:3.52,multi:0.00,clarify:0.00,chat:52.73,t1:17.97,t2:14.06,t3:12.89,t4:11.33,task:14.06,session:0.00},{m:"Llama-3.3-8B-Instruct",t:"open",single:0.39,multi:0.00,clarify:0.39,chat:69.14,t1:25.39,t2:19.14,t3:14.06,t4:11.33,task:17.48,session:0.00},{cat:"Open-Source Specialized Models",m:"xLAM-2-32B",t:"spec",single:60.94,multi:34.77,clarify:38.67,chat:69.92,t1:69.53,t2:52.73,t3:43.36,t4:38.67,task:51.07,session:8.20},{m:"xLAM-2-70B",t:"spec",single:64.45,multi:36.72,clarify:28.91,chat:64.84,t1:64.06,t2:51.56,t3:42.58,t4:36.72,task:48.73,session:7.81},{m:"ToolACE2-8B",t:"spec",single:62.11,multi:37.89,clarify:33.98,chat:84.38,t1:72.27,t2:59.38,t3:46.88,t4:39.84,task:54.59,session:7.42},{m:"xLAM-2-8B",t:"spec",single:62.11,multi:29.30,clarify:24.22,chat:54.30,t1:52.73,t2:44.14,t3:39.06,t4:33.98,task:42.48,session:5.08},{m:"Watt-8B",t:"spec",single:61.72,multi:28.13,clarify:22.66,chat:78.13,t1:68.75,t2:47.27,t3:39.06,t4:35.55,task:47.66,session:4.69},{m:"Hammer2.1-7B",t:"spec",single:40.23,multi:21.88,clarify:30.47,chat:94.92,t1:61.72,t2:46.88,t3:40.63,t4:38.28,task:46.88,session:4.69},{m:"xLAM-2-1B",t:"spec",single:53.13,multi:17.19,clarify:15.23,chat:65.23,t1:50.39,t2:40.63,t3:33.98,t4:25.78,task:37.70,session:2.34},{m:"xLAM-2-3B",t:"spec",single:52.34,multi:23.44,clarify:16.02,chat:57.03,t1:42.97,t2:43.36,t3:34.77,t4:27.73,task:37.21,session:1.17},{m:"Hammer2.1-3B",t:"spec",single:32.81,multi:18.36,clarify:11.33,chat:91.02,t1:34.77,t2:46.48,t3:40.63,t4:31.64,task:38.38,session:0.39},{m:"Hammer2.1-1.5B",t:"spec",single:4.69,multi:1.56,clarify:1.17,chat:96.09,t1:26.17,t2:26.17,t3:26.56,t4:24.61,task:25.88,session:0.00},{m:"Hammer2.1-0.5B",t:"spec",single:9.77,multi:2.34,clarify:3.13,chat:86.72,t1:25.39,t2:29.69,t3:25.39,t4:21.48,task:25.49,session:0.00}];
+
+const LB_ORCH_SHORT=[
+{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",p:54.14,s:25.00,mix:16.67,ta:40.23,ap_s:45.28,ap_mix:39.89,ap:40.37,op_p:53.50,op_mix:16.67,op:40.66},
+{m:"Gemini-2.5-pro",t:"prop",p:49.04,s:25.00,mix:14.29,ta:36.33,ap_s:47.17,ap_mix:39.15,ap:39.87,op_p:43.31,op_mix:11.90,op:32.37},
+{m:"Claude-4-Sonnet",t:"prop",p:54.78,s:31.25,mix:25.00,ta:43.75,ap_s:60.38,ap_mix:46.32,ap:47.57,op_p:52.87,op_mix:23.81,op:42.74},
+{m:"o1",t:"prop",p:50.96,s:12.50,mix:21.43,ta:39.06,ap_s:35.85,ap_mix:37.50,ap:37.35,op_p:50.32,op_mix:20.24,op:39.83},
+{m:"GPT-4o",t:"prop",p:53.50,s:31.25,mix:21.43,ta:41.80,ap_s:41.51,ap_mix:45.40,ap:45.06,op_p:51.59,op_mix:21.43,op:41.08},
+{m:"Grok-4",t:"prop",p:54.14,s:18.75,mix:21.43,ta:41.41,ap_s:41.51,ap_mix:46.51,ap:46.06,op_p:53.50,op_mix:21.43,op:42.32},
+{m:"GPT-5",t:"prop",p:43.31,s:37.50,mix:16.67,ta:34.38,ap_s:49.06,ap_mix:38.42,ap:39.36,op_p:42.68,op_mix:13.10,op:32.37},
+{cat:"Open-Source General Models",m:"GLM-4.5",t:"open",p:51.59,s:31.25,mix:21.43,ta:40.63,ap_s:67.92,ap_mix:48.90,ap:50.59,op_p:49.68,op_mix:20.24,op:39.42},
+{m:"Kimi-K2",t:"open",p:45.86,s:12.50,mix:15.48,ta:33.98,ap_s:52.83,ap_mix:34.93,ap:36.52,op_p:43.95,op_mix:15.48,op:34.02},
+{m:"DeepSeek-R1",t:"open",p:53.50,s:18.75,mix:21.43,ta:41.02,ap_s:41.51,ap_mix:44.12,ap:43.89,op_p:52.87,op_mix:20.24,op:41.49},
+{m:"DeepSeek-V3",t:"open",p:52.87,s:25.00,mix:14.29,ta:38.67,ap_s:43.40,ap_mix:32.54,ap:33.50,op_p:51.59,op_mix:14.29,op:38.59},
+{m:"Qwen3-32B-Thinking",t:"open",p:42.04,s:12.50,mix:7.14,ta:28.91,ap_s:41.51,ap_mix:28.31,ap:29.48,op_p:40.13,op_mix:7.14,op:28.63},
+{cat:"Open-Source Specialized Models",m:"xLAM-2-70B",t:"spec",p:49.68,s:12.50,mix:16.67,ta:36.72,ap_s:43.40,ap_mix:44.85,ap:44.72,op_p:26.75,op_mix:7.14,op:19.92},
+{m:"ToolACE2-8B",t:"spec",p:47.77,s:31.25,mix:20.24,ta:37.89,ap_s:50.94,ap_mix:43.01,ap:43.72,op_p:26.11,op_mix:14.29,op:21.99},
+{m:"Watt-8B",t:"spec",p:44.59,s:6.25,mix:1.19,ta:28.13,ap_s:22.64,ap_mix:21.87,ap:21.94,op_p:44.59,op_mix:1.19,op:29.46},
+{m:"Hammer2.1-7B",t:"spec",p:33.12,s:12.50,mix:2.38,ta:21.88,ap_s:24.53,ap_mix:13.24,ap:14.24,op_p:31.85,op_mix:2.38,op:21.58}
+];
+
+const LB_ORCH_FULL=[{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",p:54.14,s:25.00,mix:16.67,ta:40.23,ap_s:45.28,ap_mix:39.89,ap:40.37,op_p:53.50,op_mix:16.67,op:40.66},{m:"Gemini-2.5-Pro",t:"prop",p:49.04,s:25.00,mix:14.29,ta:36.33,ap_s:47.17,ap_mix:39.15,ap:39.87,op_p:43.31,op_mix:11.90,op:32.37},{m:"Claude-3.7-Sonnet",t:"prop",p:43.95,s:62.50,mix:25.00,ta:39.06,ap_s:86.79,ap_mix:61.40,ap:63.65,op_p:0.00,op_mix:0.00,op:0.00},{m:"Claude-4-Sonnet",t:"prop",p:54.78,s:31.25,mix:25.00,ta:43.75,ap_s:60.38,ap_mix:46.32,ap:47.57,op_p:52.87,op_mix:23.81,op:42.74},{m:"Claude-4.1-Opus",t:"prop",p:50.96,s:43.75,mix:17.86,ta:39.84,ap_s:62.26,ap_mix:48.35,ap:49.58,op_p:50.32,op_mix:16.67,op:38.59},{m:"o1",t:"prop",p:50.96,s:12.50,mix:21.43,ta:39.06,ap_s:35.85,ap_mix:37.50,ap:37.35,op_p:50.32,op_mix:20.24,op:39.83},{m:"o3",t:"prop",p:48.41,s:31.25,mix:23.81,ta:39.45,ap_s:66.04,ap_mix:54.60,ap:55.61,op_p:0.64,op_mix:0.00,op:0.41},{m:"o4-mini",t:"prop",p:39.49,s:31.25,mix:16.67,ta:31.64,ap_s:52.83,ap_mix:37.68,ap:39.03,op_p:0.00,op_mix:0.00,op:0.00},{m:"GPT-4o",t:"prop",p:53.50,s:31.25,mix:21.43,ta:41.80,ap_s:41.51,ap_mix:45.40,ap:45.06,op_p:51.59,op_mix:21.43,op:41.08},{m:"GPT-4.1",t:"prop",p:58.60,s:25.00,mix:20.24,ta:44.14,ap_s:49.06,ap_mix:45.77,ap:46.06,op_p:56.69,op_mix:19.05,op:43.57},{m:"GPT-5",t:"prop",p:43.31,s:37.50,mix:16.67,ta:34.38,ap_s:49.06,ap_mix:38.42,ap:39.36,op_p:42.68,op_mix:13.10,op:32.37},{m:"Grok-4",t:"prop",p:54.14,s:18.75,mix:21.43,ta:41.41,ap_s:41.51,ap_mix:46.51,ap:46.06,op_p:53.50,op_mix:21.43,op:42.32},{m:"Mistral-Large",t:"prop",p:47.77,s:25.00,mix:16.67,ta:36.33,ap_s:45.28,ap_mix:40.44,ap:40.87,op_p:45.86,op_mix:15.48,op:35.27},{m:"Doubao-1.5",t:"prop",p:35.03,s:12.50,mix:7.14,ta:24.61,ap_s:37.74,ap_mix:29.41,ap:30.15,op_p:9.55,op_mix:1.19,op:6.64},{m:"Doubao-1.5-Thinking",t:"prop",p:31.21,s:18.75,mix:7.14,ta:22.66,ap_s:56.60,ap_mix:23.35,ap:26.30,op_p:28.03,op_mix:7.14,op:20.75},{m:"Doubao-1.6",t:"prop",p:50.96,s:25.00,mix:22.62,ta:40.23,ap_s:50.94,ap_mix:47.79,ap:48.07,op_p:50.96,op_mix:22.62,op:41.08},{m:"Doubao-1.6-Thinking",t:"prop",p:46.50,s:12.50,mix:15.48,ta:34.38,ap_s:52.83,ap_mix:39.34,ap:40.54,op_p:43.95,op_mix:15.48,op:34.02},{cat:"Open-Source General Models",m:"Llama-3.3-70B-Instruct",t:"open",p:0.00,s:0.00,mix:0.00,ta:0.00,ap_s:15.09,ap_mix:2.02,ap:3.18,op_p:0.00,op_mix:0.00,op:0.00},{m:"Llama-3.3-8B-Instruct",t:"open",p:0.00,s:0.00,mix:0.00,ta:0.00,ap_s:3.77,ap_mix:0.18,ap:0.50,op_p:0.00,op_mix:0.00,op:0.00},{m:"Llama-3.3-3B-Instruct",t:"open",p:0.00,s:0.00,mix:0.00,ta:0.00,ap_s:3.77,ap_mix:0.18,ap:0.50,op_p:0.00,op_mix:0.00,op:0.00},{m:"Llama-3.3-1B-Instruct",t:"open",p:0.00,s:0.00,mix:0.00,ta:0.00,ap_s:3.77,ap_mix:0.18,ap:0.50,op_p:0.00,op_mix:0.00,op:0.00},{m:"Qwen2.5-72B-Instruct",t:"open",p:44.59,s:25.00,mix:9.52,ta:32.03,ap_s:41.51,ap_mix:30.33,ap:31.32,op_p:42.04,op_mix:7.14,op:29.88},{m:"Qwen2.5-32B-Instruct",t:"open",p:52.87,s:43.75,mix:10.71,ta:38.67,ap_s:56.60,ap_mix:24.08,ap:26.97,op_p:52.23,op_mix:10.71,op:37.76},{m:"Qwen2.5-14B-Instruct",t:"open",p:39.49,s:18.75,mix:5.95,ta:27.34,ap_s:26.42,ap_mix:19.67,ap:20.27,op_p:36.31,op_mix:4.76,op:25.31},{m:"Qwen2.5-7B-Instruct",t:"open",p:38.22,s:6.25,mix:4.76,ta:25.39,ap_s:28.30,ap_mix:26.29,ap:26.47,op_p:33.12,op_mix:2.38,op:22.41},{m:"Qwen2.5-3B-Instruct",t:"open",p:28.66,s:6.25,mix:1.19,ta:18.36,ap_s:15.09,ap_mix:12.13,ap:12.40,op_p:27.39,op_mix:0.00,op:17.84},{m:"Qwen2.5-1.5B-Instruct",t:"open",p:21.66,s:0.00,mix:0.00,ta:13.28,ap_s:9.43,ap_mix:4.96,ap:5.36,op_p:21.66,op_mix:0.00,op:14.11},{m:"Qwen2.5-0.5B-Instruct",t:"open",p:7.64,s:0.00,mix:0.00,ta:4.69,ap_s:11.32,ap_mix:3.68,ap:4.36,op_p:7.64,op_mix:0.00,op:4.98},{m:"Qwen3-30B-A3B",t:"open",p:42.04,s:6.25,mix:5.95,ta:28.13,ap_s:26.42,ap_mix:25.00,ap:25.13,op_p:40.76,op_mix:5.95,op:28.63},{m:"Qwen3-32B",t:"open",p:46.50,s:12.50,mix:11.90,ta:33.20,ap_s:47.17,ap_mix:30.70,ap:32.16,op_p:43.95,op_mix:9.52,op:31.95},{m:"Qwen3-14B",t:"open",p:44.59,s:25.00,mix:7.14,ta:31.25,ap_s:41.51,ap_mix:28.86,ap:29.98,op_p:44.59,op_mix:7.14,op:31.54},{m:"Qwen3-8B",t:"open",p:38.85,s:0.00,mix:7.14,ta:26.17,ap_s:15.09,ap_mix:25.18,ap:24.29,op_p:38.22,op_mix:5.95,op:26.97},{m:"Qwen3-4B",t:"open",p:35.67,s:6.25,mix:1.19,ta:22.66,ap_s:28.30,ap_mix:13.42,ap:14.74,op_p:34.39,op_mix:1.19,op:22.82},{m:"Qwen3-1.7B",t:"open",p:31.85,s:0.00,mix:0.00,ta:19.53,ap_s:18.87,ap_mix:16.91,ap:17.09,op_p:31.85,op_mix:0.00,op:20.75},{m:"Qwen3-0.6B",t:"open",p:12.10,s:6.25,mix:0.00,ta:7.81,ap_s:22.64,ap_mix:9.19,ap:10.39,op_p:11.47,op_mix:0.00,op:7.47},{m:"Qwen3-30B-A3B-Thinking",t:"open",p:36.94,s:6.25,mix:4.76,ta:24.61,ap_s:18.87,ap_mix:22.43,ap:22.11,op_p:35.67,op_mix:3.57,op:24.48},{m:"Qwen3-32B-Thinking",t:"open",p:42.04,s:12.50,mix:7.14,ta:28.91,ap_s:41.51,ap_mix:28.31,ap:29.48,op_p:40.13,op_mix:7.14,op:28.63},{m:"Qwen3-14B-Thinking",t:"open",p:43.95,s:25.00,mix:5.95,ta:30.47,ap_s:45.28,ap_mix:31.62,ap:32.83,op_p:43.95,op_mix:5.95,op:30.71},{m:"Qwen3-8B-Thinking",t:"open",p:47.13,s:12.50,mix:11.90,ta:33.59,ap_s:28.30,ap_mix:31.99,ap:31.66,op_p:47.13,op_mix:10.71,op:34.44},{m:"Qwen3-4B-Thinking",t:"open",p:42.68,s:18.75,mix:4.76,ta:28.91,ap_s:39.62,ap_mix:23.16,ap:24.62,op_p:42.68,op_mix:4.76,op:29.46},{m:"Qwen3-1.7B-Thinking",t:"open",p:38.85,s:6.25,mix:1.19,ta:24.61,ap_s:26.42,ap_mix:11.40,ap:12.73,op_p:38.85,op_mix:1.19,op:25.73},{m:"Qwen3-0.6B-Thinking",t:"open",p:26.11,s:0.00,mix:0.00,ta:16.02,ap_s:18.87,ap_mix:9.74,ap:10.55,op_p:25.48,op_mix:0.00,op:16.60},{m:"GLM-4.5",t:"open",p:51.59,s:31.25,mix:21.43,ta:40.63,ap_s:67.92,ap_mix:48.90,ap:50.59,op_p:49.68,op_mix:20.24,op:39.42},{m:"Kimi-K2",t:"open",p:45.86,s:12.50,mix:15.48,ta:33.98,ap_s:52.83,ap_mix:34.93,ap:36.52,op_p:43.95,op_mix:15.48,op:34.02},{m:"DeepSeek-R1",t:"open",p:53.50,s:18.75,mix:21.43,ta:41.02,ap_s:41.51,ap_mix:44.12,ap:43.89,op_p:52.87,op_mix:20.24,op:41.49},{m:"DeepSeek-V3",t:"open",p:52.87,s:25.00,mix:14.29,ta:38.67,ap_s:43.40,ap_mix:32.54,ap:33.50,op_p:51.59,op_mix:14.29,op:38.59},{m:"DeepSeek-V3.1",t:"open",p:53.50,s:25.00,mix:19.05,ta:40.63,ap_s:52.83,ap_mix:37.68,ap:39.03,op_p:47.77,op_mix:14.29,op:36.10},{cat:"Open-Source Specialized Models",m:"xLAM-2-70B",t:"spec",p:49.68,s:12.50,mix:16.67,ta:36.72,ap_s:43.40,ap_mix:44.85,ap:44.72,op_p:26.75,op_mix:7.14,op:19.92},{m:"xLAM-2-32B",t:"spec",p:45.86,s:25.00,mix:15.48,ta:34.77,ap_s:58.49,ap_mix:40.26,ap:41.88,op_p:25.48,op_mix:5.95,op:18.67},{m:"xLAM-2-8B",t:"spec",p:40.76,s:25.00,mix:8.33,ta:29.30,ap_s:43.40,ap_mix:27.57,ap:28.98,op_p:26.75,op_mix:3.57,op:18.67},{m:"xLAM-2-3B",t:"spec",p:33.12,s:12.50,mix:7.14,ta:23.44,ap_s:24.53,ap_mix:23.35,ap:23.45,op_p:15.92,op_mix:3.57,op:11.62},{m:"xLAM-2-1B",t:"spec",p:27.39,s:0.00,mix:1.19,ta:17.19,ap_s:22.64,ap_mix:17.46,ap:17.92,op_p:10.83,op_mix:0.00,op:7.05},{m:"ToolACE2-8B",t:"spec",p:47.77,s:31.25,mix:20.24,ta:37.89,ap_s:50.94,ap_mix:43.01,ap:43.72,op_p:26.11,op_mix:14.29,op:21.99},{m:"Watt-8B",t:"spec",p:44.59,s:6.25,mix:1.19,ta:28.13,ap_s:22.64,ap_mix:21.87,ap:21.94,op_p:44.59,op_mix:1.19,op:29.46},{m:"Hammer2.1-7B",t:"spec",p:33.12,s:12.50,mix:2.38,ta:21.88,ap_s:24.53,ap_mix:13.24,ap:14.24,op_p:31.85,op_mix:2.38,op:21.58},{m:"Hammer2.1-3B",t:"spec",p:24.84,s:12.50,mix:7.14,ta:18.36,ap_s:32.08,ap_mix:18.01,ap:19.26,op_p:24.20,op_mix:7.14,op:18.26},{m:"Hammer2.1-1.5B",t:"spec",p:2.55,s:0.00,mix:0.00,ta:1.56,ap_s:1.89,ap_mix:1.29,ap:1.34,op_p:2.55,op_mix:0.00,op:1.66},{m:"Hammer2.1-0.5B",t:"spec",p:3.18,s:0.00,mix:1.19,ta:2.34,ap_s:9.43,ap_mix:10.48,ap:10.39,op_p:3.18,op_mix:0.00,op:2.07}];
+
+// Error SHORT: from main body tex (lines 546-569), values may differ from appendix
+const LB_ERROR_SHORT=[
+{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",refusal:24.56,wrong_name:8.02,wrong_refusal:3.26,redundant:23.06,call_error:18.05,early_term:4.76,param_type:1.50,param_halluc:4.51,param_value:12.28},
+{m:"Gemini-2.5-Pro",t:"prop",refusal:33.93,wrong_name:7.81,wrong_refusal:3.79,redundant:16.74,call_error:14.51,early_term:5.13,param_type:1.12,param_halluc:6.47,param_value:10.49},
+{m:"Claude-4-Sonnet",t:"prop",refusal:9.44,wrong_name:19.55,wrong_refusal:11.24,redundant:16.40,call_error:12.13,early_term:6.52,param_type:1.80,param_halluc:8.09,param_value:14.83},
+{m:"o1",t:"prop",refusal:30.57,wrong_name:8.53,wrong_refusal:3.55,redundant:21.33,call_error:8.77,early_term:8.06,param_type:1.42,param_halluc:6.40,param_value:11.37},
+{m:"GPT-4o",t:"prop",refusal:5.41,wrong_name:21.65,wrong_refusal:12.12,redundant:14.50,call_error:11.47,early_term:7.58,param_type:3.46,param_halluc:9.96,param_value:13.85},
+{m:"Grok-4",t:"prop",refusal:3.72,wrong_name:24.07,wrong_refusal:17.03,redundant:17.81,call_error:10.18,early_term:5.68,param_type:2.94,param_halluc:6.46,param_value:12.13},
+{m:"GPT-5",t:"prop",refusal:15.93,wrong_name:13.05,wrong_refusal:6.91,redundant:31.67,call_error:10.17,early_term:3.65,param_type:1.34,param_halluc:10.75,param_value:6.53},
+{cat:"Open-Source General Models",m:"GLM-4.5",t:"open",refusal:10.89,wrong_name:19.33,wrong_refusal:10.67,redundant:18.89,call_error:15.33,early_term:6.00,param_type:1.33,param_halluc:4.67,param_value:12.89},
+{m:"Kimi-K2",t:"open",refusal:21.31,wrong_name:13.50,wrong_refusal:7.17,redundant:16.24,call_error:11.60,early_term:6.54,param_type:2.74,param_halluc:6.75,param_value:14.14},
+{m:"DeepSeek-R1",t:"open",refusal:13.54,wrong_name:14.41,wrong_refusal:11.14,redundant:20.96,call_error:11.79,early_term:6.33,param_type:1.53,param_halluc:8.52,param_value:11.79},
+{m:"DeepSeek-V3",t:"open",refusal:10.52,wrong_name:21.65,wrong_refusal:10.93,redundant:15.88,call_error:16.49,early_term:5.15,param_type:1.65,param_halluc:7.42,param_value:10.31},
+{m:"Qwen3-32B-Thinking",t:"open",refusal:9.20,wrong_name:20.35,wrong_refusal:9.20,redundant:19.18,call_error:19.18,early_term:4.31,param_type:1.96,param_halluc:7.83,param_value:8.81},
+{cat:"Open-Source Specialized Models",m:"xLAM-2-70B",t:"spec",refusal:6.48,wrong_name:30.67,wrong_refusal:17.14,redundant:4.38,call_error:16.19,early_term:5.71,param_type:1.71,param_halluc:5.14,param_value:12.57},
+{m:"ToolACE2-8B",t:"spec",refusal:10.11,wrong_name:28.60,wrong_refusal:8.60,redundant:6.67,call_error:18.28,early_term:6.02,param_type:3.23,param_halluc:3.66,param_value:14.84},
+{m:"Watt-8B",t:"spec",refusal:5.97,wrong_name:30.97,wrong_refusal:10.45,redundant:7.09,call_error:23.13,early_term:4.29,param_type:1.87,param_halluc:5.78,param_value:10.45},
+{m:"Hammer2.1-7B",t:"spec",refusal:38.24,wrong_name:15.81,wrong_refusal:2.39,redundant:12.68,call_error:15.26,early_term:1.84,param_type:3.49,param_halluc:1.47,param_value:8.82}
+];
+
+const LB_ERROR_FULL=[{cat:"Proprietary General Models",m:"Gemini-2.0-Thinking",t:"prop",refusal:24.56,wrong_name:8.02,wrong_refusal:3.26,redundant:23.06,call_error:18.05,early_term:4.76,param_type:1.50,param_halluc:4.51,param_value:12.28},{m:"Gemini-2.5-Pro",t:"prop",refusal:33.93,wrong_name:7.81,wrong_refusal:3.79,redundant:16.74,call_error:14.51,early_term:5.13,param_type:1.12,param_halluc:6.47,param_value:10.49},{m:"Claude-3.7-Sonnet",t:"prop",refusal:11.02,wrong_name:16.73,wrong_refusal:17.91,redundant:16.34,call_error:16.54,early_term:1.57,param_type:1.57,param_halluc:6.30,param_value:12.01},{m:"Claude-4-Sonnet",t:"prop",refusal:9.44,wrong_name:19.55,wrong_refusal:11.24,redundant:16.40,call_error:12.13,early_term:6.52,param_type:1.57,param_halluc:8.31,param_value:14.83},{m:"Claude-4.1-Opus",t:"prop",refusal:15.18,wrong_name:17.79,wrong_refusal:9.76,redundant:18.22,call_error:12.15,early_term:3.25,param_type:2.17,param_halluc:8.46,param_value:13.02},{m:"o1",t:"prop",refusal:30.57,wrong_name:8.53,wrong_refusal:3.55,redundant:21.33,call_error:8.77,early_term:8.06,param_type:1.42,param_halluc:6.40,param_value:11.37},{m:"o3",t:"prop",refusal:10.66,wrong_name:17.46,wrong_refusal:9.98,redundant:13.15,call_error:17.01,early_term:4.31,param_type:1.36,param_halluc:10.43,param_value:15.65},{m:"o4-mini",t:"prop",refusal:18.03,wrong_name:17.62,wrong_refusal:7.99,redundant:16.60,call_error:16.19,early_term:3.89,param_type:1.43,param_halluc:9.02,param_value:9.22},{m:"GPT-4o",t:"prop",refusal:5.41,wrong_name:21.65,wrong_refusal:12.12,redundant:14.50,call_error:11.26,early_term:7.58,param_type:2.60,param_halluc:10.82,param_value:13.85},{m:"GPT-4.1",t:"prop",refusal:11.97,wrong_name:21.58,wrong_refusal:8.55,redundant:18.80,call_error:9.83,early_term:6.41,param_type:1.71,param_halluc:9.62,param_value:11.54},{m:"GPT-5",t:"prop",refusal:15.93,wrong_name:13.05,wrong_refusal:6.91,redundant:31.67,call_error:10.17,early_term:3.65,param_type:1.15,param_halluc:10.94,param_value:6.53},{m:"Grok-4",t:"prop",refusal:3.72,wrong_name:24.07,wrong_refusal:17.03,redundant:17.81,call_error:10.18,early_term:5.68,param_type:2.94,param_halluc:6.46,param_value:12.13},{m:"Mistral-Large",t:"prop",refusal:8.93,wrong_name:24.08,wrong_refusal:15.34,redundant:8.16,call_error:14.76,early_term:5.05,param_type:1.94,param_halluc:8.16,param_value:13.40},{m:"Doubao-1.5",t:"prop",refusal:15.16,wrong_name:31.47,wrong_refusal:21.32,redundant:2.29,call_error:11.30,early_term:2.72,param_type:1.72,param_halluc:8.44,param_value:5.58},{m:"Doubao-1.5-Thinking",t:"prop",refusal:17.27,wrong_name:27.64,wrong_refusal:11.45,redundant:5.82,call_error:13.09,early_term:4.36,param_type:1.82,param_halluc:11.45,param_value:7.09},{m:"Doubao-1.6",t:"prop",refusal:1.87,wrong_name:25.37,wrong_refusal:17.54,redundant:22.39,call_error:10.07,early_term:5.22,param_type:1.49,param_halluc:5.78,param_value:10.26},{m:"Doubao-1.6-Thinking",t:"prop",refusal:3.87,wrong_name:30.97,wrong_refusal:21.77,redundant:16.77,call_error:8.87,early_term:4.68,param_type:0.97,param_halluc:6.13,param_value:5.97},{cat:"Open-Source General Models",m:"Llama-3.3-70B-Instruct",t:"open",refusal:62.27,wrong_name:4.32,wrong_refusal:5.11,redundant:19.66,call_error:5.91,early_term:1.14,param_type:1.14,param_halluc:0.11,param_value:0.34},{m:"Llama-3.3-8B-Instruct",t:"open",refusal:77.99,wrong_name:0.00,wrong_refusal:0.00,redundant:21.66,call_error:0.00,early_term:0.36,param_type:0.00,param_halluc:0.00,param_value:0.00},{m:"Llama-3.3-3B-Instruct",t:"open",refusal:78.30,wrong_name:0.00,wrong_refusal:0.00,redundant:21.70,call_error:0.00,early_term:0.00,param_type:0.00,param_halluc:0.00,param_value:0.00},{m:"Llama-3.3-1B-Instruct",t:"open",refusal:80.14,wrong_name:0.00,wrong_refusal:0.00,redundant:19.86,call_error:0.00,early_term:0.00,param_type:0.00,param_halluc:0.00,param_value:0.00},{m:"Qwen2.5-72B-Instruct",t:"open",refusal:12.42,wrong_name:21.59,wrong_refusal:8.96,redundant:15.07,call_error:12.02,early_term:8.76,param_type:2.24,param_halluc:7.54,param_value:11.20},{m:"Qwen2.5-32B-Instruct",t:"open",refusal:12.89,wrong_name:17.88,wrong_refusal:9.15,redundant:16.84,call_error:13.72,early_term:7.90,param_type:2.08,param_halluc:7.90,param_value:11.64},{m:"Qwen2.5-14B-Instruct",t:"open",refusal:17.42,wrong_name:15.91,wrong_refusal:8.14,redundant:19.89,call_error:12.50,early_term:8.71,param_type:2.08,param_halluc:6.25,param_value:9.09},{m:"Qwen2.5-7B-Instruct",t:"open",refusal:11.01,wrong_name:21.49,wrong_refusal:12.26,redundant:12.61,call_error:20.96,early_term:5.51,param_type:1.42,param_halluc:6.75,param_value:7.82},{m:"Qwen2.5-3B-Instruct",t:"open",refusal:14.92,wrong_name:20.66,wrong_refusal:10.98,redundant:13.28,call_error:18.36,early_term:6.23,param_type:0.98,param_halluc:5.25,param_value:9.18},{m:"Qwen2.5-1.5B-Instruct",t:"open",refusal:34.10,wrong_name:13.11,wrong_refusal:4.10,redundant:15.57,call_error:16.07,early_term:3.44,param_type:0.98,param_halluc:4.59,param_value:7.05},{m:"Qwen2.5-0.5B-Instruct",t:"open",refusal:27.92,wrong_name:11.82,wrong_refusal:6.55,redundant:20.23,call_error:14.96,early_term:2.99,param_type:1.00,param_halluc:6.84,param_value:5.70},{m:"Qwen3-32B",t:"open",refusal:10.72,wrong_name:19.59,wrong_refusal:10.31,redundant:20.21,call_error:16.91,early_term:5.57,param_type:1.24,param_halluc:6.80,param_value:8.66},{m:"Qwen3-30B-A3B",t:"open",refusal:16.77,wrong_name:14.95,wrong_refusal:5.25,redundant:30.10,call_error:14.34,early_term:4.65,param_type:1.41,param_halluc:4.65,param_value:7.88},{m:"Qwen3-14B",t:"open",refusal:12.55,wrong_name:18.72,wrong_refusal:5.53,redundant:18.51,call_error:14.26,early_term:8.09,param_type:1.70,param_halluc:11.70,param_value:8.94},{m:"Qwen3-8B",t:"open",refusal:8.29,wrong_name:27.31,wrong_refusal:9.60,redundant:6.59,call_error:19.40,early_term:7.53,param_type:1.69,param_halluc:9.98,param_value:9.42},{m:"Qwen3-4B",t:"open",refusal:15.71,wrong_name:15.13,wrong_refusal:6.51,redundant:14.37,call_error:18.01,early_term:6.90,param_type:1.34,param_halluc:11.69,param_value:10.34},{m:"Qwen3-1.7B",t:"open",refusal:14.49,wrong_name:21.12,wrong_refusal:8.03,redundant:9.42,call_error:24.08,early_term:5.24,param_type:1.05,param_halluc:6.63,param_value:9.95},{m:"Qwen3-0.6B",t:"open",refusal:14.05,wrong_name:25.80,wrong_refusal:8.40,redundant:6.56,call_error:29.47,early_term:3.82,param_type:1.07,param_halluc:3.97,param_value:6.72},{m:"Qwen3-30B-A3B-Thinking",t:"open",refusal:18.45,wrong_name:12.90,wrong_refusal:4.96,redundant:29.37,call_error:14.48,early_term:5.16,param_type:1.79,param_halluc:5.16,param_value:7.74},{m:"Qwen3-14B-Thinking",t:"open",refusal:15.03,wrong_name:17.12,wrong_refusal:5.64,redundant:19.83,call_error:13.99,early_term:5.85,param_type:1.88,param_halluc:10.23,param_value:10.23},{m:"Qwen3-8B-Thinking",t:"open",refusal:11.32,wrong_name:19.44,wrong_refusal:6.84,redundant:14.10,call_error:17.52,early_term:6.84,param_type:2.14,param_halluc:10.47,param_value:11.32},{m:"Qwen3-4B-Thinking",t:"open",refusal:12.71,wrong_name:20.55,wrong_refusal:6.14,redundant:14.41,call_error:17.37,early_term:5.72,param_type:3.18,param_halluc:8.69,param_value:11.23},{m:"Qwen3-1.7B-Thinking",t:"open",refusal:15.31,wrong_name:20.66,wrong_refusal:7.20,redundant:12.73,call_error:16.05,early_term:7.01,param_type:2.03,param_halluc:7.20,param_value:11.44},{m:"Qwen3-0.6B-Thinking",t:"open",refusal:18.26,wrong_name:19.45,wrong_refusal:5.63,redundant:15.70,call_error:23.04,early_term:4.78,param_type:1.02,param_halluc:4.61,param_value:7.51},{m:"GLM-4.5",t:"open",refusal:10.89,wrong_name:19.33,wrong_refusal:10.67,redundant:18.89,call_error:15.33,early_term:6.00,param_type:1.11,param_halluc:4.89,param_value:12.89},{m:"Kimi-K2",t:"open",refusal:21.31,wrong_name:13.50,wrong_refusal:7.17,redundant:16.24,call_error:11.60,early_term:6.54,param_type:2.53,param_halluc:6.96,param_value:14.14},{m:"DeepSeek-R1",t:"open",refusal:13.54,wrong_name:14.41,wrong_refusal:11.14,redundant:20.96,call_error:11.79,early_term:6.33,param_type:1.31,param_halluc:8.73,param_value:11.79},{m:"DeepSeek-V3",t:"open",refusal:10.52,wrong_name:21.65,wrong_refusal:10.93,redundant:15.88,call_error:16.49,early_term:5.15,param_type:1.44,param_halluc:7.63,param_value:10.31},{m:"DeepSeek-V3.1",t:"open",refusal:20.00,wrong_name:11.76,wrong_refusal:9.41,redundant:25.29,call_error:13.92,early_term:3.73,param_type:0.98,param_halluc:5.69,param_value:9.22},{cat:"Open-Source Specialized Models",m:"xLAM-2-70B",t:"spec",refusal:6.48,wrong_name:30.67,wrong_refusal:17.14,redundant:4.38,call_error:16.19,early_term:5.71,param_type:0.95,param_halluc:5.90,param_value:12.57},{m:"xLAM-2-32B",t:"spec",refusal:8.98,wrong_name:21.76,wrong_refusal:15.37,redundant:8.38,call_error:18.56,early_term:4.19,param_type:1.60,param_halluc:5.39,param_value:15.77},{m:"xLAM-2-8B",t:"spec",refusal:5.60,wrong_name:27.33,wrong_refusal:19.86,redundant:3.90,call_error:19.52,early_term:5.09,param_type:2.21,param_halluc:4.92,param_value:11.21},{m:"xLAM-2-3B",t:"spec",refusal:6.84,wrong_name:28.30,wrong_refusal:17.11,redundant:5.13,call_error:21.00,early_term:4.98,param_type:1.56,param_halluc:4.82,param_value:9.64},{m:"xLAM-2-1B",t:"spec",refusal:9.40,wrong_name:24.61,wrong_refusal:13.95,redundant:5.96,call_error:22.57,early_term:4.86,param_type:1.88,param_halluc:3.61,param_value:10.66},{m:"ToolACE2-8B",t:"spec",refusal:10.11,wrong_name:28.60,wrong_refusal:8.60,redundant:6.67,call_error:18.28,early_term:6.02,param_type:2.80,param_halluc:4.09,param_value:14.84},{m:"Watt-8B",t:"spec",refusal:5.97,wrong_name:30.97,wrong_refusal:10.45,redundant:7.09,call_error:23.13,early_term:4.29,param_type:1.49,param_halluc:6.16,param_value:10.45},{m:"Hammer2.1-7B",t:"spec",refusal:38.24,wrong_name:15.81,wrong_refusal:2.39,redundant:12.68,call_error:15.26,early_term:1.84,param_type:0.55,param_halluc:4.41,param_value:8.82},{m:"Hammer2.1-3B",t:"spec",refusal:36.13,wrong_name:19.18,wrong_refusal:3.65,redundant:19.81,call_error:8.40,early_term:3.01,param_type:0.95,param_halluc:2.06,param_value:6.66},{m:"Hammer2.1-1.5B",t:"spec",refusal:60.47,wrong_name:3.29,wrong_refusal:1.32,redundant:32.15,call_error:1.32,early_term:0.26,param_type:0.00,param_halluc:0.26,param_value:0.92},{m:"Hammer2.1-0.5B",t:"spec",refusal:30.80,wrong_name:17.69,wrong_refusal:4.46,redundant:22.15,call_error:13.11,early_term:2.75,param_type:0.13,param_halluc:6.82,param_value:1.97}];
+
+// ===== Toggle state =====
+const lbState = { main: 'short', orch: 'short', error: 'short' };
+
+function toggleLB(table, mode) {
+  lbState[table] = mode;
+  // Update button states
+  const controls = document.getElementById('lb' + table.charAt(0).toUpperCase() + table.slice(1) + 'Controls');
+  if (controls) {
+    controls.querySelectorAll('.tab-btn').forEach((btn, i) => {
+      btn.classList.toggle('active', (i === 0 && mode === 'short') || (i === 1 && mode === 'full'));
+    });
+  }
+  // Re-render
+  if (table === 'main') renderTable(mode === 'short' ? LB_MAIN_SHORT : LB_MAIN_FULL, document.getElementById('lbMainWrap'), mainCols);
+  if (table === 'orch') renderTable(mode === 'short' ? LB_ORCH_SHORT : LB_ORCH_FULL, document.getElementById('lbOrchWrap'), orchCols, 'ta');
+  if (table === 'error') renderTable(mode === 'short' ? LB_ERROR_SHORT : LB_ERROR_FULL, document.getElementById('lbErrorWrap'), errorCols);
+}
+
+// ===== Render Table with logos and bold max =====
+function renderTable(data, wrap, cols, sortKey) {
+  // If sortKey provided, sort models within each category by that key descending
+  if (sortKey) {
+    const groups = [];
+    let group = null;
+    data.forEach(d => {
+      if (d.cat) { group = { cat: d.cat, items: [] }; groups.push(group); }
+      if (d.m && group) { const copy = Object.assign({}, d); delete copy.cat; group.items.push(copy); }
+    });
+    const finalData = [];
+    groups.forEach(g => {
+      g.items.sort((a, b) => (b[sortKey]||0) - (a[sortKey]||0));
+      g.items.forEach((item, i) => {
+        if (i === 0) item.cat = g.cat;
+        finalData.push(item);
+      });
+    });
+    data = finalData;
+  }
+
+  // Compute max values per numeric column per category
+  const numCols = cols.filter(c => c.k[0] !== '_');
+  const cats = []; // array of { startIdx, endIdx }
+  let catStart = -1;
+  data.forEach((d, i) => {
+    if (d.cat) {
+      if (catStart >= 0) cats.push({ s: catStart, e: i });
+      catStart = i;
+    }
+  });
+  if (catStart >= 0) cats.push({ s: catStart, e: data.length });
+
+  // Build max map: maxMap[catIdx][colKey] = maxValue
+  const maxMap = cats.map(cat => {
+    const m = {};
+    numCols.forEach(c => {
+      let mx = -Infinity;
+      for (let i = cat.s; i < cat.e; i++) {
+        if (data[i].m && data[i][c.k] != null && data[i][c.k] > mx) mx = data[i][c.k];
+      }
+      m[c.k] = mx;
+    });
+    return m;
+  });
+
+  // Which category does row i belong to?
+  function getCatIdx(rowIdx) {
+    for (let ci = 0; ci < cats.length; ci++) {
+      if (rowIdx >= cats[ci].s && rowIdx < cats[ci].e) return ci;
+    }
+    return -1;
+  }
+
+  let html = '<table><thead><tr>' + cols.map(c => `<th>${c.h}</th>`).join('') + '</tr></thead><tbody>';
+  let rank = 0;
+  data.forEach((d, di) => {
+    if (d.cat) { html += `<tr class="cat-header"><td colspan="${cols.length}">${d.cat}</td></tr>`; rank = 0; }
+    if (!d.m) return;
+    rank++;
+    const rc = rank <= 3 ? ' rank-' + rank : '';
+    const tc = d.t === 'prop' ? 'type-prop' : d.t === 'open' ? 'type-open' : 'type-spec';
+    const tl = d.t === 'prop' ? 'Proprietary' : d.t === 'open' ? 'Open-Source' : 'Specialized';
+    const ci = getCatIdx(di);
+    const logo = getModelLogo(d.m);
+    const logoImg = logo ? `<img src="assets/logos/${logo}" style="width:18px;height:18px;vertical-align:middle;margin-right:4px" alt="">` : '';
+    html += '<tr>' + cols.map(c => {
+      if (c.k === '_rank') return `<td><span class="rank-badge${rc}">${rank}</span></td>`;
+      if (c.k === '_model') return `<td class="model-name">${logoImg}${d.m}</td>`;
+      if (c.k === '_type') return `<td><span class="model-type ${tc}">${tl}</span></td>`;
+      const v = d[c.k];
+      if (v == null) return '<td class="score-cell"></td>';
+      const isMax = ci >= 0 && maxMap[ci] && Math.abs(v - maxMap[ci][c.k]) < 0.001 && v > 0;
+      const style = isMax ? ' style="font-weight:700;color:var(--green)"' : '';
+      return `<td class="score-cell"${style}>${v.toFixed(2)}</td>`;
+    }).join('') + '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+const mainCols = [{h:'#',k:'_rank'},{h:'Model',k:'_model'},{h:'Type',k:'_type'},{h:'g<sub>single</sub>',k:'single'},{h:'g<sub>multi</sub>',k:'multi'},{h:'g<sub>clarify</sub>',k:'clarify'},{h:'g<sub>chat</sub>',k:'chat'},{h:'Task 1',k:'t1'},{h:'Task 2',k:'t2'},{h:'Task 3',k:'t3'},{h:'Task 4',k:'t4'},{h:'Task Acc.',k:'task'},{h:'Session Acc.',k:'session'}];
+const orchCols = [{h:'#',k:'_rank'},{h:'Model',k:'_model'},{h:'Type',k:'_type'},{h:'Parallel',k:'p'},{h:'Sequential',k:'s'},{h:'Mixed',k:'mix'},{h:'Task Acc.',k:'ta'},{h:'AP (S)',k:'ap_s'},{h:'AP (S+P)',k:'ap_mix'},{h:'AP Overall',k:'ap'},{h:'OP (P)',k:'op_p'},{h:'OP (S+P)',k:'op_mix'},{h:'OP Overall',k:'op'}];
+const errorCols = [{h:'#',k:'_rank'},{h:'Model',k:'_model'},{h:'Type',k:'_type'},{h:'Refusal',k:'refusal'},{h:'Wrong Name',k:'wrong_name'},{h:'Wrong Refusal',k:'wrong_refusal'},{h:'Redundant',k:'redundant'},{h:'Call Error',k:'call_error'},{h:'Early Term.',k:'early_term'},{h:'Param Type',k:'param_type'},{h:'Param Halluc.',k:'param_halluc'},{h:'Param Value',k:'param_value'}];
+renderTable(LB_MAIN_SHORT, document.getElementById('lbMainWrap'), mainCols);
+renderTable(LB_ORCH_SHORT, document.getElementById('lbOrchWrap'), orchCols, 'ta');
+renderTable(LB_ERROR_SHORT, document.getElementById('lbErrorWrap'), errorCols);
+
+// Hunyuan Metrics removed
+
+// ===== Task Browser =====
+let tasksInited = false;
+const PAGE_SIZE = 10;
+let tCurrentPage = 0, tFiltered = [];
+let taskLang = 'en';
+
+function md(s) { try { return marked.parse(s || '') } catch(e) { return esc(s) } }
+
+// Language toggle
+document.querySelectorAll('#langToggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#langToggle button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    taskLang = btn.dataset.lang;
+    renderTasks();
+  });
+});
+
+function getTypeBadge(tt){if(!tt)return'badge-single';if(tt.includes('Mixed')||tt.includes('Parallel')||tt.includes('Sequential')||tt.includes('Multi'))return'badge-multi';if(tt.includes('Single'))return'badge-single';if(tt.includes('Chat'))return'badge-chat';if(tt.includes('Clarify'))return'badge-clarify';return'badge-single'}
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function filterTasks(){
+  const type=document.getElementById('typeFilter').value;
+  const search=document.getElementById('searchInput').value.toLowerCase();
+  tFiltered=TASKS_DATA.filter(s=>{
+    if(type!=='all'&&!s.turns.some(t=>t.type&&t.type.includes(type)))return false;
+    if(search&&!s.turns.some(t=>(t.zh+' '+t.en).toLowerCase().includes(search)))return false;
+    return true;
+  });
+  tCurrentPage=0;renderTasks();
+}
+
+function renderTasks(){
+  const L=taskLang;
+  const start=tCurrentPage*PAGE_SIZE, page=tFiltered.slice(start,start+PAGE_SIZE);
+  const list=document.getElementById('tasksList');
+  list.innerHTML=page.map(s=>{
+    // Tools
+    const tools=L==='zh'?s.zh_tools:s.en_tools;
+    const toolsDetail=tools.map(t=>{
+      const paramList=Object.entries(t.params).map(([k,v])=>{
+        const req=t.required.includes(k)?'<span style="color:var(--rose);font-size:.68rem"> *required</span>':'';
+        return `<div style="margin-left:12px;font-size:.78rem"><span style="color:var(--pri)">${esc(k)}</span>: <span style="color:var(--muted)">${esc(v)}</span>${req}</div>`;
+      }).join('');
+      return `<div style="margin-bottom:8px;padding:8px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)"><div style="font-weight:600;font-size:.85rem;color:var(--text);font-family:var(--mono)">${esc(t.name)}</div><div style="font-size:.8rem;color:var(--text2);margin:2px 0 4px">${esc(t.desc)}</div>${paramList}</div>`;
+    }).join('');
+    const toolsSummary=`<div style="margin-bottom:16px"><details><summary style="cursor:pointer;font-size:.82rem;font-weight:700;color:var(--pri);padding:8px 0"><i class="fas fa-wrench"></i> ${L==='zh'?'可用工具':'Available Tools'} (${s.tool_count})</summary><div style="margin-top:8px">${toolsDetail}</div></details></div>`;
+
+    let turnsHtml='';
+    s.turns.forEach((turn,i)=>{
+      const taskText=L==='zh'?turn.zh:turn.en;
+      const actions=L==='zh'?turn.zh_actions:turn.en_actions;
+      const msgs=L==='zh'?turn.zh_msgs:turn.en_msgs;
+
+      // Conversation messages
+      let convHtml='';
+      if(msgs&&msgs.length>0){
+        convHtml='<div style="margin-top:10px">';
+        msgs.forEach(m=>{
+          const cls=m.role==='user'?'conv-user':'conv-assistant';
+          const roleLabel=m.role==='user'?(L==='zh'?'用户':'User'):(L==='zh'?'助手':'Assistant');
+          const content=m.role==='assistant'?`<div class="md-content">${md(m.content)}</div>`:esc(m.content);
+          convHtml+=`<div class="conv-msg ${cls}"><div class="conv-role"><i class="fas fa-${m.role==='user'?'user':'robot'}"></i> ${roleLabel}</div>${content}</div>`;
+        });
+        convHtml+='</div>';
+      }
+
+      // Gold actions
+      let actionsHtml='';
+      if(actions&&actions.length>0){
+        actionsHtml=`<details style="margin-top:10px"><summary style="cursor:pointer;font-size:.75rem;font-weight:700;color:var(--green);padding:4px 0"><i class="fas fa-check-circle"></i> Gold Actions (${actions.length} steps)</summary><div style="margin-top:8px">`;
+        actions.forEach((a,ai)=>{
+          const deps=a.deps&&a.deps.length>0?`<div style="font-size:.75rem;color:var(--amber);margin-top:4px"><i class="fas fa-link"></i> Depends on step: [${a.deps.join(', ')}]</div>`:'';
+          const argsFormatted=typeof a.args==='object'?JSON.stringify(a.args,null,2):String(a.args);
+          // Observation: if it looks like markdown, render it
+          let obsHtml;
+          if(a.name==='prepare_to_answer'){
+            obsHtml=`<div style="font-size:.72rem;font-weight:600;color:var(--muted);margin-bottom:2px">RESPONSE</div><div class="md-content" style="padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;font-size:.85rem">${md(a.obs)}</div>`;
+          } else {
+            obsHtml=`<div style="font-size:.72rem;font-weight:600;color:var(--muted);margin-bottom:2px">OBSERVATION</div><pre style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:.78rem;color:var(--text2);white-space:pre-wrap;word-break:break-word;line-height:1.6;overflow-x:auto;margin:0;max-height:300px;overflow-y:auto">${esc(a.obs)}</pre>`;
+          }
+          actionsHtml+=`<div style="margin-bottom:10px;padding:10px 14px;background:rgba(5,150,105,.03);border:1px solid rgba(5,150,105,.12);border-radius:8px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><span style="background:var(--green);color:#fff;font-size:.68rem;font-weight:700;padding:1px 6px;border-radius:4px">Step ${ai}</span><span style="font-family:var(--mono);font-weight:700;font-size:.88rem;color:var(--text)">${esc(a.name)}</span></div><div style="font-size:.72rem;font-weight:600;color:var(--muted);margin-bottom:2px">ARGUMENTS</div><pre style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:.78rem;color:var(--text);white-space:pre-wrap;word-break:break-word;line-height:1.6;overflow-x:auto;margin:0 0 6px">${esc(argsFormatted)}</pre>${obsHtml}${deps}</div>`;
+        });
+        actionsHtml+='</div></details>';
+      }
+
+      const subtypeHtml=turn.subtype?`<span class="badge-subtype">${L==='zh'?(turn.subtype_zh||turn.subtype):turn.subtype}</span>`:'';
+      const depHtml=turn.dependent?`<span class="badge-subtype" style="background:rgba(225,29,72,.06);color:var(--rose)">${L==='zh'?'依赖上文':'Context-Dependent'}</span>`:'';
+      const typeLabel=L==='zh'?(turn.type_zh||turn.type):turn.type;
+
+      turnsHtml+=`<div class="task-block"><div class="task-header"><span class="task-num">Task ${i+1}</span><span class="badge ${getTypeBadge(turn.type)}">${typeLabel||'N/A'}</span>${subtypeHtml}${i>0?depHtml:''}</div><div style="font-size:.92rem;font-weight:500;margin-bottom:6px">${esc(taskText)}</div>${convHtml}${actionsHtml}</div>`;
+    });
+
+    const envLabel=L==='zh'?s.env_zh:s.env;
+    return`<div class="session-card"><div class="session-header" onclick="this.nextElementSibling.classList.toggle('open')"><span class="session-id">${s.id}</span><span class="session-env">${esc(envLabel)}</span><span style="font-size:.75rem;color:var(--muted)"><i class="fas fa-wrench"></i> ${s.tool_count} tools</span>${s.turns.map(t=>`<span class="badge ${getTypeBadge(t.type)}">${L==='zh'?(t.type_zh||t.type):t.type}</span>`).join(' ')}</div><div class="session-body">${toolsSummary}${turnsHtml}</div></div>`;
+  }).join('');
+  // Pagination
+  const tp=Math.ceil(tFiltered.length/PAGE_SIZE),pag=document.getElementById('tasksPagination');
+  if(tp<=1){pag.innerHTML='';return}
+  let h=`<button class="page-btn" onclick="tGoPage(0)" ${tCurrentPage===0?'disabled':''}>First</button><button class="page-btn" onclick="tGoPage(${tCurrentPage-1})" ${tCurrentPage===0?'disabled':''}>&laquo;</button>`;
+  for(let p=Math.max(0,tCurrentPage-3);p<Math.min(tp,tCurrentPage+4);p++)h+=`<button class="page-btn ${p===tCurrentPage?'active':''}" onclick="tGoPage(${p})">${p+1}</button>`;
+  h+=`<button class="page-btn" onclick="tGoPage(${tCurrentPage+1})" ${tCurrentPage>=tp-1?'disabled':''}>&#187;</button><button class="page-btn" onclick="tGoPage(${tp-1})" ${tCurrentPage>=tp-1?'disabled':''}>Last</button><span style="color:var(--muted);font-size:.8rem;padding:6px">${tFiltered.length} sessions</span>`;
+  pag.innerHTML=h;
+}
+function tGoPage(p){const tp=Math.ceil(tFiltered.length/PAGE_SIZE);tCurrentPage=Math.max(0,Math.min(p,tp-1));renderTasks();document.getElementById('contentArea').scrollTop=0}
+document.getElementById('typeFilter').addEventListener('change',filterTasks);
+let tSt;document.getElementById('searchInput').addEventListener('input',()=>{clearTimeout(tSt);tSt=setTimeout(filterTasks,300)});
+
+// ===== Trajectory Visualizer =====
+let trajInited = false;
+let trPage = 0, trFiltered = [];
+const TR_PAGE_SIZE = 10;
+
+function initTraj(){
+  const sel=document.getElementById('trajSession');
+  sel.innerHTML='<option value="all">All Sessions</option>'+TRAJ_DATA.map(s=>`<option value="${s.id}">${s.id}</option>`).join('');
+  sel.addEventListener('change',filterTraj);
+  document.getElementById('trajTask').addEventListener('change',filterTraj);
+  document.getElementById('trajFilter').addEventListener('change',filterTraj);
+  filterTraj();
+}
+
+function filterTraj(){
+  const sessVal=document.getElementById('trajSession').value;
+  const taskVal=document.getElementById('trajTask').value;
+  const filterVal=document.getElementById('trajFilter').value;
+
+  // Build flat list of {sess, result, taskData} items
+  trFiltered=[];
+  const sessions=sessVal==='all'?TRAJ_DATA:TRAJ_DATA.filter(s=>s.id===sessVal);
+  sessions.forEach(sess=>{
+    const taskData=TASKS_DATA.find(t=>t.id===sess.id);
+    sess.results.forEach((r,i)=>{
+      if(taskVal!=='all'&&i!==parseInt(taskVal))return;
+      if(filterVal!=='all'&&r.label!==filterVal)return;
+      trFiltered.push({sess,r,taskData,taskIdx:i});
+    });
+  });
+  trPage=0;
+  renderTraj();
+}
+
+function renderTraj(){
+  const start=trPage*TR_PAGE_SIZE;
+  const page=trFiltered.slice(start,start+TR_PAGE_SIZE);
+  const container=document.getElementById('trajContent');
+
+  let html=page.map((item,pi)=>{
+    const {sess,r,taskData,taskIdx}=item;
+    const taskInfo=taskData&&taskData.turns[r.task_idx]?taskData.turns[r.task_idx]:null;
+    const labelCls=r.label==='correct'?'badge-correct':'badge-incorrect';
+    const optBadge=r.optimal?'<span class="badge badge-single" style="background:rgba(79,70,229,.08)">Optimal</span>':'';
+    const totalLat=r.latency.reduce((a,b)=>a+b,0).toFixed(2);
+    const totalIn=r.in_tokens.reduce((a,b)=>a+b,0);
+    const totalOut=r.out_tokens.reduce((a,b)=>a+b,0);
+
+    // Tools section (collapsible)
+    let toolsHtml='';
+    if(sess.tools&&sess.tools.length>0){
+      const toolsDetail=sess.tools.map(t=>{
+        const paramList=Object.entries(t.params).map(([k,v])=>{
+          const req=t.required.includes(k)?'<span style="color:var(--rose);font-size:.68rem"> *required</span>':'';
+          return `<div style="margin-left:12px;font-size:.78rem"><span style="color:var(--pri)">${esc(k)}</span>: <span style="color:var(--muted)">${esc(v)}</span>${req}</div>`;
+        }).join('');
+        return `<div style="margin-bottom:6px;padding:6px 10px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)"><div style="font-weight:600;font-size:.83rem;color:var(--text);font-family:var(--mono)">${esc(t.name)}</div><div style="font-size:.78rem;color:var(--text2);margin:2px 0 3px">${esc(t.desc)}</div>${paramList}</div>`;
+      }).join('');
+      toolsHtml=`<div style="padding:12px 20px;border-bottom:1px solid var(--border)"><details><summary style="cursor:pointer;font-size:.78rem;font-weight:700;color:var(--pri)"><i class="fas fa-wrench"></i> Available Tools (${sess.tools.length})</summary><div style="margin-top:8px">${toolsDetail}</div></details></div>`;
+    }
+
+    // Build steps HTML
+    let stepsHtml='';
+    r.steps.forEach((step,si)=>{
+      const stepLat=r.latency[si]?r.latency[si].toFixed(2)+'s':'';
+      const stepIn=r.in_tokens[si]||0;
+      const stepOut=r.out_tokens[si]||0;
+      const nameOk=step.name_ok==='correct';
+      const argsOk=step.args_ok==='correct';
+      const stepColor=step.error?'var(--rose)':nameOk?'var(--green)':'var(--amber)';
+
+      stepsHtml+=`<div style="padding:12px 20px;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><span style="font-size:.75rem;font-weight:700;color:${stepColor};background:${stepColor}11;padding:2px 8px;border-radius:4px">Step ${si}</span>`;
+      if(step.name_ok)stepsHtml+=`<span style="font-size:.7rem;color:${nameOk?'var(--green)':'var(--rose)'}">${nameOk?'&#10003;':'&#10007;'} name</span>`;
+      if(step.args_ok)stepsHtml+=`<span style="font-size:.7rem;color:${argsOk?'var(--green)':'var(--rose)'}">${argsOk?'&#10003;':'&#10007;'} args</span>`;
+      stepsHtml+=`<span style="margin-left:auto;font-size:.72rem;color:var(--muted);font-family:var(--mono)">${stepLat} &middot; ${stepIn}&rarr;${stepOut} tokens</span></div>`;
+
+      if(step.reasoning){
+        stepsHtml+=`<div style="margin-bottom:8px;padding:10px 14px;background:rgba(139,92,246,.04);border:1px solid rgba(139,92,246,.1);border-radius:6px"><div style="font-size:.7rem;font-weight:700;color:#8b5cf6;margin-bottom:4px"><i class="fas fa-brain"></i> REASONING</div><pre style="font-family:var(--mono);font-size:.78rem;color:var(--text2);white-space:pre-wrap;word-break:break-word;line-height:1.7;margin:0">${esc(step.reasoning)}</pre></div>`;
+      }
+      if(step.content){
+        stepsHtml+=`<div style="margin-bottom:8px;padding:10px 14px;background:rgba(8,145,178,.03);border:1px solid rgba(8,145,178,.1);border-radius:6px"><div style="font-size:.7rem;font-weight:700;color:var(--cyan);margin-bottom:4px"><i class="fas fa-comment"></i> CONTENT</div><pre style="font-family:var(--mono);font-size:.78rem;color:var(--text2);white-space:pre-wrap;word-break:break-word;line-height:1.7;margin:0">${esc(step.content)}</pre></div>`;
+      }
+      if(step.tc&&step.tc.length>0){
+        step.tc.forEach(tc=>{
+          let argsDisp=tc.args||'';
+          try{argsDisp=JSON.stringify(JSON.parse(argsDisp),null,2)}catch(e){}
+          stepsHtml+=`<div style="margin-bottom:8px;padding:10px 14px;background:rgba(5,150,105,.03);border:1px solid rgba(5,150,105,.1);border-radius:6px"><div style="font-size:.7rem;font-weight:700;color:var(--green);margin-bottom:4px"><i class="fas fa-tools"></i> TOOL CALL: <span style="font-family:var(--mono)">${esc(tc.name)}</span></div><pre style="font-family:var(--mono);font-size:.78rem;color:var(--text);white-space:pre-wrap;word-break:break-word;line-height:1.6;margin:0">${esc(argsDisp)}</pre></div>`;
+        });
+      }
+      if(step.error){
+        stepsHtml+=`<div style="margin-bottom:8px;padding:10px 14px;background:rgba(225,29,72,.04);border:1px solid rgba(225,29,72,.12);border-radius:6px"><div style="font-size:.7rem;font-weight:700;color:var(--rose);margin-bottom:4px"><i class="fas fa-exclamation-triangle"></i> ERROR</div><pre style="font-family:var(--mono);font-size:.8rem;color:var(--rose);white-space:pre-wrap;margin:0">${esc(step.error)}</pre></div>`;
+      }
+
+      // Gold answer for this step
+      if(step.gold&&step.gold.length>0){
+        let goldHtml='<div style="margin-top:6px;padding:10px 14px;background:rgba(217,119,6,.04);border:1px solid rgba(217,119,6,.12);border-radius:6px"><div style="font-size:.7rem;font-weight:700;color:var(--amber);margin-bottom:6px"><i class="fas fa-star"></i> GOLD ANSWER' + (step.gold.length > 1 ? ' (' + step.gold.length + ' candidates)' : '') + '</div>';
+        step.gold.forEach((cand, ci) => {
+          if(step.gold.length > 1) goldHtml += `<div style="font-size:.7rem;font-weight:600;color:var(--muted);margin-bottom:3px">Candidate ${ci}:</div>`;
+          cand.forEach(a => {
+            let aArgs = a.args || '';
+            try { aArgs = JSON.stringify(JSON.parse(aArgs), null, 2) } catch(e) {}
+            goldHtml += `<div style="margin-bottom:4px;padding:6px 10px;background:rgba(217,119,6,.03);border-left:3px solid var(--amber);border-radius:4px;font-family:var(--mono);font-size:.78rem"><strong style="color:var(--amber)">${esc(a.name)}</strong><pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-word;line-height:1.6;color:var(--text)">${esc(aArgs)}</pre></div>`;
+          });
+        });
+        goldHtml += '</div>';
+        stepsHtml += goldHtml;
+      }
+
+      stepsHtml+=`</div>`;
+    });
+
+    // Collapsible card
+    const uid='tr_'+start+'_'+pi;
+    return `<div class="session-card" style="margin-bottom:12px"><div class="session-header" onclick="document.getElementById('${uid}').classList.toggle('open')"><span class="session-id">${sess.id}</span><span class="task-num">Task ${r.task_idx+1}</span><span class="badge ${labelCls}">${r.label}</span>${optBadge}${taskInfo?'<span class="badge '+getTypeBadge(taskInfo.type)+'">'+taskInfo.type+'</span>':''}<span style="margin-left:auto;font-size:.72rem;color:var(--muted);font-family:var(--mono)">${totalLat}s &middot; ${totalIn} in &middot; ${totalOut} out &middot; ${r.steps.length} steps</span></div><div class="session-body" id="${uid}">${toolsHtml}<div style="padding:12px 20px;border-bottom:1px solid var(--border)"><div style="font-size:.72rem;font-weight:700;color:var(--pri);text-transform:uppercase;margin-bottom:4px"><i class="fas fa-user"></i> User Query</div><div style="font-size:.88rem">${esc(r.query)}</div>${taskInfo?'<div style="font-size:.85rem;color:var(--text2);font-style:italic;margin-top:4px">'+esc(taskInfo.zh)+'</div>':''}</div>${stepsHtml}</div></div>`;
+  }).join('');
+
+  // Pagination
+  const tp=Math.ceil(trFiltered.length/TR_PAGE_SIZE);
+  let pagHtml='';
+  if(tp>1){
+    pagHtml=`<div class="pagination" style="margin-top:20px"><button class="page-btn" onclick="trGoPage(0)" ${trPage===0?'disabled':''}>First</button><button class="page-btn" onclick="trGoPage(${trPage-1})" ${trPage===0?'disabled':''}>&laquo;</button>`;
+    for(let p=Math.max(0,trPage-3);p<Math.min(tp,trPage+4);p++)pagHtml+=`<button class="page-btn ${p===trPage?'active':''}" onclick="trGoPage(${p})">${p+1}</button>`;
+    pagHtml+=`<button class="page-btn" onclick="trGoPage(${trPage+1})" ${trPage>=tp-1?'disabled':''}>&#187;</button><button class="page-btn" onclick="trGoPage(${tp-1})" ${trPage>=tp-1?'disabled':''}>Last</button><span style="color:var(--muted);font-size:.8rem;padding:6px">${trFiltered.length} trajectories</span></div>`;
+  }
+
+  container.innerHTML=(html||'<div style="text-align:center;padding:40px;color:var(--muted)">No trajectories match the current filters.</div>')+pagHtml;
+}
+function trGoPage(p){const tp=Math.ceil(trFiltered.length/TR_PAGE_SIZE);trPage=Math.max(0,Math.min(p,tp-1));renderTraj();document.getElementById('contentArea').scrollTop=0}
+
+function copyBibtex(){navigator.clipboard.writeText(document.getElementById('bibtex').textContent).then(()=>{const b=document.getElementById('copyBtn');b.innerHTML='<i class="fas fa-check"></i> Copied!';setTimeout(()=>b.innerHTML='<i class="far fa-copy"></i> Copy',2000)})}
+</script>
+</body>
+</html>

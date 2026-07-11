@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VAPO Mathematical Formulations (Parsed)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+  <!-- MathJax Configuration -->
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true
+      },
+      options: {
+        ignoreHtmlClass: 'tex2jax_ignore',
+        processHtmlClass: 'tex2jax_process'
+      }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+  <style>
+    :root {
+      --bg: #080b11;
+      --panel: rgba(15, 23, 42, 0.7);
+      --border: rgba(255, 255, 255, 0.06);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #818cf8;
+      --accent-glow: rgba(129, 140, 248, 0.12);
+      --math-bg: #0f172a;
+      --highlight: #38bdf8;
+      --warning: #fb7185;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1000px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #a5b4fc, #6366f1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin: 30px 0 15px 0;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      color: var(--highlight);
+    }
+
+    .card {
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 25px;
+      box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
+    }
+
+    .equation-container {
+      background-color: var(--math-bg);
+      border-radius: 12px;
+      padding: 20px;
+      margin: 15px 0;
+      overflow-x: auto;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    p {
+      margin-bottom: 15px;
+      font-size: 0.95rem;
+      color: #cbd5e1;
+    }
+
+    ul, ol {
+      margin-left: 20px;
+      margin-bottom: 15px;
+      color: #cbd5e1;
+      font-size: 0.95rem;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    code {
+      font-family: 'Courier New', Courier, monospace;
+      background-color: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      color: var(--accent);
+    }
+
+    .highlight-box {
+      background: rgba(56, 189, 248, 0.06);
+      border-left: 4px solid var(--highlight);
+      padding: 15px;
+      border-radius: 4px;
+      margin-top: 15px;
+    }
+
+    .highlight-box strong {
+      color: var(--text);
+    }
+
+    .back-btn {
+      display: inline-block;
+      margin-bottom: 20px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: color 0.2s;
+    }
+
+    .back-btn:hover {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <a href="./wildtoolbench_convo_visualization.html" class="back-btn">&larr; Back to Visualization</a>
+    <header>
+      <h1>VAPO Equations & Math Formulations</h1>
+      <p class="subtitle">Fully Rendered Mathematics of Vagueness-Aware Preference Optimization</p>
+    </header>
+
+    <!-- MDP SECTION -->
+    <div class="section-title">1. WTB Dialogue MDP Formalization</div>
+    <div class="card">
+      <p>We model a multi-turn dialogue as a graph-conditioned Markov Decision Process $(\mathcal{S}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \lambda)$:</p>
+      <ul>
+        <li><strong>State Space $\mathcal{S}$</strong>: At step $t$, the state is $s_t = (H_t, \mathcal{Z}_t)$, where $H_t$ is the conversation transcript history and $\mathcal{Z}_t \subseteq V$ is the active frontier of topological execution graph $G = (V, E)$.</li>
+        <li><strong>Action Space $\mathcal{A}$</strong>: The rollout action contains CoT reasoning tokens $c_t$ and execution tokens $f_t$.</li>
+      </ul>
+      <p>The transition probability $\mathcal{P}(s_{t+1} \mid s_t, a_t)$ moves the topological frontier forward when tool calls match adjacent nodes, or triggers terminal failure $s_{\text{fail}}$ if formatting/parameters deviate.</p>
+    </div>
+
+    <!-- ENTROPY SECTION -->
+    <div class="section-title">2. State-Conditional Entropy Guidance</div>
+    <div class="card">
+      <p>To compute the token-level average entropy $E(c_i)$ of Chain-of-Thought reasoning tokens $c_i$ in rollout $o_i$:</p>
+      <div class="equation-container">
+        $$E(c_i) = -\frac{1}{W} \sum_{j=1}^{W} \sum_{w \in V} P(w \mid H_t, c_{i,<j}) \log P(w \mid H_t, c_{i,<j})$$
+      </div>
+
+      <p>The **Context Ambiguity Index** $D(H_t)$ dictates the entropy direction. Under **Epistemic Tool Uncertainty**, it is computed as the normalized entropy of tool choice:</p>
+      <div class="equation-container">
+        $$D_{\text{uns}}(H_t) = -\frac{1}{\log N} \sum_{k=1}^N p(t_k \mid H_t) \log p(t_k \mid H_t)$$
+      </div>
+
+      <p>Under **Supervised Gating**, the head $D_\psi(H_t)$ is trained on ground-truth graph indicators $y_t = \mathbb{I}(\text{ask\_user} \in \mathcal{Z}_t)$:</p>
+      <div class="equation-container">
+        $$D_\psi(H_t) = \sigma(W_\psi h_t + b_\psi)$$
+      </div>
+      <div class="equation-container">
+        $$\mathcal{L}_{\text{amb}}(\psi) = -\mathbb{E}_{(H_t, y_t)} \left[ y_t \log D_\psi(H_t) + (1-y_t) \log(1 - D_\psi(H_t)) \right]$$
+      </div>
+
+      <p>Using $D(H_t)$, the adaptive entropy scaler $\gamma(H_t)$ shifts the policy advantage $\tilde{A}_{t,i}$:</p>
+      <div class="equation-container">
+        $$\gamma(H_t) = \alpha \cdot (D(H_t) - \tau)$$
+      </div>
+      <div class="equation-container">
+        $$\tilde{A}_{t,i} = A_{t,i} + \text{clip}\left( \gamma(H_t) E(c_i), -\frac{|A_{t,i}|}{\varsigma}, \frac{|A_{t,i}|}{\varsigma} \right)$$
+      </div>
+
+      <div class="highlight-box">
+        <strong>Exploration Mode ($D(H_t) > \tau \implies \gamma(H_t) > 0$):</strong> Policy receives a positive reward for high entropy, encouraging the model to ask clarifying questions.<br>
+        <strong>Execution Mode ($D(H_t) < \tau \implies \gamma(H_t) < 0$):</strong> Policy receives an entropy penalty, forcing the model to make direct, concise tool calls.
+      </div>
+    </div>
+
+    <!-- SSMR SECTION -->
+    <div class="section-title">3. Step-wise State-Matching Rewards (SSMR)</div>
+    <div class="card">
+      <p>The step-wise dense reward $r_t$ provides credit assignment based on node matching progress:</p>
+      <div class="equation-container">
+        $$r_t(s_t, a_t) = \Delta_{\text{progress}} \cdot R_{\text{node}} - \eta - \mu \cdot \mathbb{I}(\text{Redundant Call}) - R_{\text{fail}} \cdot \mathbb{I}(s_{t+1} = s_{\text{fail}})$$
+      </div>
+      <p>We then calculate the standard GRPO advantage $A_{t,i}$ relative to the group of rollouts using the discounted future rewards $R(o_{i, t}) = \sum_{k=t}^{T_i} \lambda^{k-t} r_k$:</p>
+      <div class="equation-container">
+        $$A_{t,i} = \frac{R(o_{i, t}) - \text{mean}_j(R(o_{j, t}))}{\text{std}_j(R(o_{j, t}))}$$
+      </div>
+    </div>
+
+    <!-- DVG SECTION -->
+    <div class="section-title">4. Decoupled Value-Grading (DVG)</div>
+    <div class="card">
+      <p>To prevent formatting failures from corrupting reasoning parameters, we split the objective into reasoning loss (on CoT index set $\mathcal{I}_{\text{reason}}$) and action loss (on tool call index set $\mathcal{I}_{\text{action}}$):</p>
+      
+      <p><strong>Reasoning Objective:</strong></p>
+      <div class="equation-container">
+        $$\mathcal{J}_{\text{reason}}(\theta) = \mathbb{E} \left[ \frac{1}{S} \sum_{i=1}^S \sum_{k \in \mathcal{I}_{\text{reason}}} \min \left( r_{i,k}(\theta)\tilde{A}_{t,i}, \text{clip}(r_{i,k}(\theta), 1-\epsilon, 1+\epsilon)\tilde{A}_{t,i} \right) \right]$$
+      </div>
+
+      <p><strong>Action Objective:</strong></p>
+      <div class="equation-container">
+        $$\mathcal{J}_{\text{action}}(\theta) = \mathbb{E} \left[ \frac{1}{S} \sum_{i=1}^S \sum_{k \in \mathcal{I}_{\text{action}}} \min \left( r_{i,k}(\theta)A_{t,i}, \text{clip}(r_{i,k}(\theta), 1-\epsilon, 1+\epsilon)A_{t,i} \right) \right]$$
+      </div>
+      
+      <p>Here, $r_{i,k}(\theta) = \frac{\pi_\theta(y_{i,k} \mid s_t, y_{i,<k})}{\pi_{\theta_{\text{old}}}(y_{i,k} \mid s_t, y_{i,<k})}$ is the probability ratio.</p>
+    </div>
+
+  </div>
+
+</body>
+</html>
