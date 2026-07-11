@@ -17,6 +17,71 @@ class BaseHandler:
         self.model_messages = []
         self.consecutive_tool_messages = True
 
+    def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
+        # Find the tool schema
+        schema = None
+        for t in tools:
+            if t.get("function", {}).get("name") == tool_name:
+                schema = t["function"]
+                break
+        if not schema:
+            return arguments_dict
+            
+        parameters = schema.get("parameters", {})
+        if not parameters or parameters.get("type") != "object":
+            return arguments_dict
+            
+        properties = parameters.get("properties", {})
+        
+        def cast_value(val, prop_schema):
+            prop_type = prop_schema.get("type")
+            if prop_type == "integer":
+                try:
+                    return int(float(val))
+                except:
+                    pass
+            elif prop_type == "number":
+                try:
+                    return float(val)
+                except:
+                    pass
+            elif prop_type == "boolean":
+                if isinstance(val, str):
+                    if val.lower() in ["true", "1"]:
+                        return True
+                    if val.lower() in ["false", "0"]:
+                        return False
+            elif prop_type == "array" and isinstance(val, str):
+                try:
+                    loaded = json.loads(val)
+                    if isinstance(loaded, list):
+                        return loaded
+                except:
+                    pass
+            elif prop_type == "object" and isinstance(val, dict):
+                # Recursive cleaning for nested objects
+                nested_properties = prop_schema.get("properties", {})
+                cleaned_nested = {}
+                for k, v in val.items():
+                    if k in nested_properties:
+                        cleaned_nested[k] = cast_value(v, nested_properties[k])
+                return cleaned_nested
+            # Enum check
+            if "enum" in prop_schema:
+                enum_options = prop_schema["enum"]
+                if isinstance(val, str):
+                    # Case-insensitive match
+                    for opt in enum_options:
+                        if isinstance(opt, str) and opt.lower() == val.lower():
+                            return opt
+            return val
+
+        cleaned_args = {}
+        for k, v in arguments_dict.items():
+            if k in properties:
+                cleaned_args[k] = cast_value(v, properties[k])
+        return cleaned_args
+
     def _request_tool_call(self, inference_data):
         raise NotImplementedError
 
@@ -234,6 +299,24 @@ class BaseHandler:
             reasoning_content = model_response_data["reasoning_content"]
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
+            if tool_calls is not None:
+                cleaned_tool_calls = []
+                for tc in tool_calls:
+                    try:
+                        tc_name = tc["function"]["name"]
+                        tc_args_str = tc["function"]["arguments"]
+                        if isinstance(tc_args_str, str):
+                            tc_args = json.loads(tc_args_str)
+                            cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
+                            tc["function"]["arguments"] = json.dumps(cleaned_args, ensure_ascii=False)
+                        elif isinstance(tc_args_str, dict):
+                            cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args_str, tools)
+                            tc["function"]["arguments"] = cleaned_args
+                    except Exception as e:
+                        print(f"Cleaner error: {e}", flush=True)
+                    cleaned_tool_calls.append(tc)
+                tool_calls = cleaned_tool_calls
+                model_response_data["tool_calls"] = tool_calls
             input_token = model_response_data["input_token"]
             output_token = model_response_data["output_token"]
             latency.append(query_latency)
