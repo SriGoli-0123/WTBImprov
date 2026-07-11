@@ -82,7 +82,7 @@ class BaseHandler:
                 cleaned_args[k] = cast_value(v, properties[k])
         return cleaned_args
 
-    def _clean_tool_calls_obmv(self, tool_calls, tools, messages):
+    def _pre_execution_check(self, tool_calls, tools, messages):
         if not tool_calls or not hasattr(self, "generate_with_backoff"):
             return tool_calls
             
@@ -108,7 +108,7 @@ class BaseHandler:
                     cleaned_tool_calls.append(tc)
                     continue
                     
-                obmv_prompt = f"""You are a strict JSON Schema Validation Agent. 
+                verification_prompt = f"""You are a strict JSON Schema Validation Agent. 
 Review the following generated tool call against its schema and the user's intention.
 
 [USER INTENT / CONVERSATION CONTEXT]
@@ -131,7 +131,7 @@ Corrected JSON Arguments:"""
                 
                 # Call local LLM out-of-band
                 api_response, _ = self.generate_with_backoff(
-                    messages=[{"role": "user", "content": obmv_prompt}],
+                    messages=[{"role": "user", "content": verification_prompt}],
                     model=self.model_name,
                     temperature=0.0
                 )
@@ -157,7 +157,7 @@ Corrected JSON Arguments:"""
                     else:
                         tc["function"]["arguments"] = corrected_args
             except Exception as e:
-                print(f"OBMV error: {e}", flush=True)
+                print(f"Pre-execution verification error: {e}", flush=True)
             cleaned_tool_calls.append(tc)
         return cleaned_tool_calls
 
@@ -379,8 +379,8 @@ Corrected JSON Arguments:"""
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             if tool_calls is not None:
-                # 1. Primary: Out-of-Band Metacognitive Verification (OBMV)
-                tool_calls = self._clean_tool_calls_obmv(tool_calls, tools, messages)
+                # 1. Primary: Out-of-Band Pre-Execution Check
+                tool_calls = self._pre_execution_check(tool_calls, tools, messages)
                 
                 # 2. Fallback: Rule-Based Schema Cleaner
                 cleaned_tool_calls = []
