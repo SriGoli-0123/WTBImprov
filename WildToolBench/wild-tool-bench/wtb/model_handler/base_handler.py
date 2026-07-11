@@ -82,6 +82,85 @@ class BaseHandler:
                 cleaned_args[k] = cast_value(v, properties[k])
         return cleaned_args
 
+    def _clean_tool_calls_obmv(self, tool_calls, tools, messages):
+        if not tool_calls or not hasattr(self, "generate_with_backoff"):
+            return tool_calls
+            
+        user_message = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_message = msg.get("content", "")
+                break
+                
+        cleaned_tool_calls = []
+        for tc in tool_calls:
+            try:
+                tc_name = tc.get("function", {}).get("name")
+                tc_args_str = tc.get("function", {}).get("arguments")
+                
+                # Find matching schema
+                tool_schema = None
+                for t in tools:
+                    if t.get("function", {}).get("name") == tc_name:
+                        tool_schema = t
+                        break
+                if not tool_schema:
+                    cleaned_tool_calls.append(tc)
+                    continue
+                    
+                obmv_prompt = f"""You are a strict JSON Schema Validation Agent. 
+Review the following generated tool call against its schema and the user's intention.
+
+[USER INTENT / CONVERSATION CONTEXT]
+User's last message: {user_message}
+
+[TOOL SCHEMA]
+{json.dumps(tool_schema, indent=2, ensure_ascii=False)}
+
+[GENERATED TOOL CALL]
+Function Name: {tc_name}
+Arguments: {tc_args_str}
+
+Your job:
+1. Check if the tool call conforms to the schema (parameter types, required fields, enum values).
+2. Check if the arguments match the user's intent (e.g. optional fields like detailed stats/sorting if implied).
+3. If there are any errors or omissions, correct them.
+4. Output ONLY a valid JSON dictionary of the corrected arguments. Do not include any explanation or markdown formatting.
+
+Corrected JSON Arguments:"""
+                
+                # Call local LLM out-of-band
+                api_response, _ = self.generate_with_backoff(
+                    messages=[{"role": "user", "content": obmv_prompt}],
+                    model=self.model_name,
+                    temperature=0.0
+                )
+                choice = api_response.choices[0]
+                message = choice.message
+                corrected_args_str = message.content.strip()
+                
+                # Strip markdown code block wrappers if model outputs them
+                if corrected_args_str.startswith("```"):
+                    lines = corrected_args_str.split("\n")
+                    if lines[0].startswith("```json") or lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    corrected_args_str = "\n".join(lines).strip()
+                
+                # Validate it is valid JSON
+                corrected_args = json.loads(corrected_args_str)
+                if isinstance(corrected_args, dict):
+                    # Replace the arguments inside tc
+                    if isinstance(tc_args_str, str):
+                        tc["function"]["arguments"] = json.dumps(corrected_args, ensure_ascii=False)
+                    else:
+                        tc["function"]["arguments"] = corrected_args
+            except Exception as e:
+                print(f"OBMV error: {e}", flush=True)
+            cleaned_tool_calls.append(tc)
+        return cleaned_tool_calls
+
     def _request_tool_call(self, inference_data):
         raise NotImplementedError
 
@@ -300,6 +379,10 @@ class BaseHandler:
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             if tool_calls is not None:
+                # 1. Primary: Out-of-Band Metacognitive Verification (OBMV)
+                tool_calls = self._clean_tool_calls_obmv(tool_calls, tools, messages)
+                
+                # 2. Fallback: Rule-Based Schema Cleaner
                 cleaned_tool_calls = []
                 for tc in tool_calls:
                     try:
