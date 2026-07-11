@@ -86,11 +86,21 @@ class BaseHandler:
         if not tool_calls or not hasattr(self, "generate_with_backoff"):
             return tool_calls
             
-        user_message = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_message = msg.get("content", "")
+        # Extract system message (which contains current anchor date and time)
+        system_message = ""
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_message = msg.get("content", "")
                 break
+                
+        # Format the recent conversation history for clean context
+        history_str = ""
+        for msg in messages[-5:]:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if msg.get("tool_calls"):
+                content = f"[Tool Calls]: {json.dumps(msg['tool_calls'], ensure_ascii=False)}"
+            history_str += f"{role}: {content}\n"
                 
         cleaned_tool_calls = []
         for tc in tool_calls:
@@ -108,23 +118,26 @@ class BaseHandler:
                     cleaned_tool_calls.append(tc)
                     continue
                     
-                verification_prompt = f"""You are a strict JSON Schema Validation Agent. 
-Review the following generated tool call against its schema and the user's intention.
+                verification_prompt = f"""You are a strict JSON Schema Validation and Data Correction Agent. 
+Review the following generated tool call against its schema, the user's intent, and the conversation history.
 
-[USER INTENT / CONVERSATION CONTEXT]
-User's last message: {user_message}
+[SYSTEM CONTEXT]
+{system_message}
+
+[CONVERSATION HISTORY]
+{history_str}
 
 [TOOL SCHEMA]
 {json.dumps(tool_schema, indent=2, ensure_ascii=False)}
 
-[GENERATED TOOL CALL]
+[GENERATED TOOL CALL DRAFT]
 Function Name: {tc_name}
 Arguments: {tc_args_str}
 
 Your job:
-1. Check if the tool call conforms to the schema (parameter types, required fields, enum values).
-2. Check if the arguments match the user's intent (e.g. optional fields like detailed stats/sorting if implied).
-3. If there are any errors or omissions, correct them.
+1. Ensure all argument values are correct according to the conversation history (e.g., resolving relative dates like 'yesterday' to YYYY-MM-DD using the anchor date, matching entity IDs, URLs, and codes).
+2. Check if the tool call conforms to the schema (parameter types, required fields, enum values).
+3. If there are any errors, omissions, or incorrect values, correct them.
 4. Output ONLY a valid JSON dictionary of the corrected arguments. Do not include any explanation or markdown formatting.
 
 Corrected JSON Arguments:"""
