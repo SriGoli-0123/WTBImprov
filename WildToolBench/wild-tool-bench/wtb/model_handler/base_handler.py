@@ -118,8 +118,8 @@ class BaseHandler:
                     cleaned_tool_calls.append(tc)
                     continue
                     
-                verification_prompt = f"""You are an expert Tool Call Validation Agent.
-Analyze the conversation history and the draft tool call against the schema to determine the correct arguments.
+                verification_prompt = f"""You are a helper filling out a form based on a conversation.
+Think of the tool schema as a blank form, and the conversation as the background context.
 
 [SYSTEM CONTEXT]
 {system_message}
@@ -127,25 +127,21 @@ Analyze the conversation history and the draft tool call against the schema to d
 [CONVERSATION HISTORY]
 {history_str}
 
-[TOOL SCHEMA]
+[TOOL SCHEMA (THE FORM)]
 {json.dumps(tool_schema, indent=2, ensure_ascii=False)}
 
-[GENERATED TOOL CALL DRAFT]
-Function Name: {tc_name}
-Arguments: {tc_args_str}
+[DRAFT RESPONSE]
+{tc_args_str}
 
-Perform a step-by-step analysis to reconcile the draft arguments with the user's intent:
-1. Identify the user's core objective in this turn of the conversation, using past turns for context.
-2. For each parameter in the schema:
-   - What is its semantic purpose according to its description?
-   - Does the user's intent or conversation history imply or explicitly state a value for it?
-   - If yes, resolve the correct value (performing date arithmetic if needed, or mapping variables accurately).
-   - If no, check if it is required. Omit it if it is optional and not needed.
-3. Formulate the final arguments dictionary based on this analysis.
+Follow these two simple steps to fill out the form correctly:
+1. Extract the Facts: Write a simple list of all values, dates, and actions mentioned or implied in the conversation history.
+2. Fill the Form: Map those facts directly to the fields in the Tool Schema. 
+   - If a schema field has a matching fact, fill it in (ensure dates are resolved to YYYY-MM-DD using the system context anchor, and types match).
+   - If a schema field has no matching fact in the history, leave it blank (omit it entirely).
 
-Output your thoughts under "Reasoning:" and then output the final JSON dictionary under "Corrected Arguments:".
+Output your thoughts under "Facts and Mapping:" and then output the final JSON dictionary under "Form Output:".
 
-Reasoning:
+Facts and Mapping:
 """
                 
                 # Call local LLM out-of-band
