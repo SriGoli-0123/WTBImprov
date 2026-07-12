@@ -13,8 +13,10 @@ This guide walks you through setting up a Conda environment, launching a vLLM se
 
 ## 🛠️ Step-by-Step Setup on SOL
 
-### Step 1: Upload the Workspace Folder to SOL
-Compress the folder on your local machine and upload it to your home/scratch directory on SOL:
+### Step 1: Get the Workspace onto SOL
+Either upload a compressed copy, or clone/pull the git repo directly - pick one:
+
+**Option A - tar/scp (copies every file, including `.env`):**
 ```bash
 # On your local terminal (compress)
 tar -czvf wildtoolbench_workspace_vllm.tar.gz wildtoolbench_workspace_vllm/
@@ -26,6 +28,21 @@ scp wildtoolbench_workspace_vllm.tar.gz username@sol.asu.edu:~/
 tar -xzvf wildtoolbench_workspace_vllm.tar.gz
 cd wildtoolbench_workspace_vllm/
 ```
+
+**Option B - `git clone` / `git pull` (recommended for iterating on code):**
+```bash
+git clone https://github.com/SriGoli-0123/WTBImprov.git wildtoolbench_workspace_vllm
+cd wildtoolbench_workspace_vllm/
+git checkout demo   # or: git pull origin demo, if already cloned
+```
+⚠️ `.env` is intentionally excluded from git (`.gitignore`) so real API keys never
+get committed - `git pull` will never create it for you. One-time per machine:
+```bash
+cd WildToolBench/wild-tool-bench
+cp .env.example .env
+```
+(The default values already point at the local vLLM server this guide starts, so
+no editing is needed unless you're using a different host/port or a real API key.)
 
 ### Step 2: Create and Configure the Conda Environment
 Load ASU SOL's Anaconda module and create a dedicated environment:
