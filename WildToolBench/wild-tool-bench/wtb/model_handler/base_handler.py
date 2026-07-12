@@ -118,8 +118,8 @@ class BaseHandler:
                     cleaned_tool_calls.append(tc)
                     continue
                     
-                verification_prompt = f"""You are a strict JSON Schema Validation and Data Correction Agent. 
-Review the following generated tool call against its schema, the user's intent, and the conversation history.
+                verification_prompt = f"""You are an expert Tool Call Validation Agent.
+Analyze the conversation history and the draft tool call against the schema to determine the correct arguments.
 
 [SYSTEM CONTEXT]
 {system_message}
@@ -134,14 +134,19 @@ Review the following generated tool call against its schema, the user's intent, 
 Function Name: {tc_name}
 Arguments: {tc_args_str}
 
-Your job is to clean, correct, and validate the draft arguments. Follow these strict, general rules:
-1. DATA LOYALTY: Ensure all values (like URLs, IDs, names, codes) are identical to the ones mentioned in the conversation history. Do not guess or modify them.
-2. DATES: Resolve relative dates (like "yesterday", "last week", "three days ago") into exact "YYYY-MM-DD" calendar dates using the date anchor in the system context.
-3. OMIT UNUSED OPTIONAL FIELDS: If an optional parameter is not requested or implied anywhere in the conversation history, or if its value would be empty (e.g. "", null), completely omit it instead of passing empty strings. However, if an optional parameter is requested or implied anywhere in the conversation history (even in previous turns), you MUST include it with its correct value.
-4. TYPE AND ENUM ALIGNMENT: Ensure values conform strictly to the schema's types (numbers must be numbers, booleans must be true/false) and match the exact enum values case-insensitively.
-5. JSON ONLY: Output ONLY a valid JSON dictionary of the corrected arguments. Do not include any explanations or markdown formatting.
+Perform a step-by-step analysis to reconcile the draft arguments with the user's intent:
+1. Identify the user's core objective in this turn of the conversation, using past turns for context.
+2. For each parameter in the schema:
+   - What is its semantic purpose according to its description?
+   - Does the user's intent or conversation history imply or explicitly state a value for it?
+   - If yes, resolve the correct value (performing date arithmetic if needed, or mapping variables accurately).
+   - If no, check if it is required. Omit it if it is optional and not needed.
+3. Formulate the final arguments dictionary based on this analysis.
 
-Corrected JSON Arguments:"""
+Output your thoughts under "Reasoning:" and then output the final JSON dictionary under "Corrected Arguments:".
+
+Reasoning:
+"""
                 
                 # Call local LLM out-of-band
                 api_response, _ = self.generate_with_backoff(
@@ -153,14 +158,20 @@ Corrected JSON Arguments:"""
                 message = choice.message
                 corrected_args_str = message.content.strip()
                 
-                # Strip markdown code block wrappers if model outputs them
-                if corrected_args_str.startswith("```"):
-                    lines = corrected_args_str.split("\n")
-                    if lines[0].startswith("```json") or lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines[-1].startswith("```"):
-                        lines = lines[:-1]
-                    corrected_args_str = "\n".join(lines).strip()
+                # Robustly find and extract the JSON dictionary block using regex
+                import re
+                json_match = re.search(r"\{.*\}", corrected_args_str, re.DOTALL)
+                if json_match:
+                    corrected_args_str = json_match.group(0)
+                else:
+                    # Fallback: strip markdown wrappers if present
+                    if corrected_args_str.startswith("```"):
+                        lines = corrected_args_str.split("\n")
+                        if lines[0].startswith("```json") or lines[0].startswith("```"):
+                            lines = lines[1:]
+                        if lines[-1].startswith("```"):
+                            lines = lines[:-1]
+                        corrected_args_str = "\n".join(lines).strip()
                 
                 # Validate it is valid JSON
                 corrected_args = json.loads(corrected_args_str)
