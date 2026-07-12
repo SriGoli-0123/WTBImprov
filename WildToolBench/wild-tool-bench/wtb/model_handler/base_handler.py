@@ -134,11 +134,12 @@ Review the following generated tool call against its schema, the user's intent, 
 Function Name: {tc_name}
 Arguments: {tc_args_str}
 
-Your job:
-1. Ensure all argument values are correct according to the conversation history (e.g., resolving relative dates like 'yesterday' to YYYY-MM-DD using the anchor date, matching entity IDs, URLs, and codes).
-2. Check if the tool call conforms to the schema (parameter types, required fields, enum values).
-3. If there are any errors, omissions, or incorrect values, correct them.
-4. Output ONLY a valid JSON dictionary of the corrected arguments. Do not include any explanation or markdown formatting.
+Your job is to clean, correct, and validate the draft arguments. Follow these strict, general rules:
+1. DATA LOYALTY: Ensure all values (like URLs, IDs, names, codes) are identical to the ones mentioned in the conversation history. Do not guess or modify them.
+2. DATES: Resolve relative dates (like "yesterday", "last week", "three days ago") into exact "YYYY-MM-DD" calendar dates using the date anchor in the system context.
+3. OMIT OPTIONAL EMPTY FIELDS: If an optional parameter is not explicitly requested, or if its value would be empty (e.g. "", null, or default), you MUST completely omit it from the final JSON instead of passing empty strings.
+4. TYPE AND ENUM ALIGNMENT: Ensure values conform strictly to the schema's types (numbers must be numbers, booleans must be true/false) and match the exact enum values case-insensitively.
+5. JSON ONLY: Output ONLY a valid JSON dictionary of the corrected arguments. Do not include any explanations or markdown formatting.
 
 Corrected JSON Arguments:"""
                 
