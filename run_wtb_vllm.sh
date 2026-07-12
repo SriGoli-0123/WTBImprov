@@ -10,6 +10,11 @@
 module load mamba/conda
 conda activate wtb_vllm
 
+# Apply JSON safety patch to the vLLM server's hermes_tool_parser to prevent server-side crashes on malformed candidate outputs
+if [ -f "patch_vllm.py" ]; then
+  python3 patch_vllm.py
+fi
+
 # 2. Choose model (defaults to Qwen/Qwen2.5-7B-Instruct if no argument is passed)
 MODEL=${1:-"Qwen/Qwen2.5-7B-Instruct"}
 # Tool-call parser for vLLM: hermes works for Qwen2.5/Qwen3;
