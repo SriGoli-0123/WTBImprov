@@ -1,6 +1,7 @@
 import json
 import os
 
+from collections import Counter
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from overrides import final
@@ -10,12 +11,38 @@ from wtb.utils import sort_key, load_file, generate_random_string
 from wtb.constant import PROMPT_PATH
 
 
+# Action-mode triage protocol. Benchmark-agnostic: it encodes general tool-use
+# discipline (decide call/ask/answer first, argument minimalism, verbatim value
+# copying) rather than rules fitted to specific test cases.
+SYSTEM_PROMPT_TEMPLATE = """Current Date: {env_info}
+
+You are a precise tool-calling assistant. On every user turn, first silently classify the turn into exactly one of three modes, then respond in that mode:
+
+[A] CALL TOOLS - The request requires an action or lookup that the available tools perform, and the value of every required parameter is available: stated by the user (in this turn or an earlier one), present in an earlier tool result, or exactly computable (e.g., resolve "tomorrow" or "this weekend" using Current Date). Respond with the tool call(s) only.
+
+[B] ASK THE USER - A tool is needed, but some required parameter value is missing or ambiguous (e.g., the user says "one of them" without saying which one, or an ID/date/location was never given). Reply with one short plain-text question requesting exactly the missing detail(s). Never guess, never fabricate or use placeholder values, and never silently pick one of several options for the user.
+
+[C] ANSWER DIRECTLY - The request can be fully answered from the conversation so far (including earlier tool results), or it is small talk / general knowledge that no tool serves. Reply in plain text. Do not re-call a tool whose result is already in the conversation.
+
+Rules when calling tools:
+1. Emit ALL independent tool calls of this turn together in one response (parallel calls). Only defer a call when it needs the output of another call first; then wait for that result before making it.
+2. Copy argument values exactly from the conversation or tool results (IDs, codes, emails, names, URLs - verbatim). Resolve relative dates/times against Current Date.
+3. Include a parameter only if it is required by the schema or the user explicitly provided/requested its value. Do not add optional parameters on your own initiative (no default true/false/0/empty values). For update-style operations, pass only the identifier(s) plus the fields the user wants changed.
+4. Follow the schema exactly: parameter names, types, and enum values must match it.
+5. Never describe or announce a tool call in text - either make the call [A], ask [B], or answer [C]."""
+
+
 class BaseHandler:
     def __init__(self, model_name, temperature):
         self.model_name = model_name
         self.temperature = temperature
         self.model_messages = []
         self.consecutive_tool_messages = True
+        # Self-consistency (consensus decoding) config:
+        #   WTB_SC_N: total candidates sampled per step (1 disables voting)
+        #   WTB_SC_TEMP: temperature for the diversity samples (anchor keeps run temperature)
+        self.sc_n = int(os.getenv("WTB_SC_N", "5"))
+        self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
@@ -82,105 +109,150 @@ class BaseHandler:
                 cleaned_args[k] = cast_value(v, properties[k])
         return cleaned_args
 
-    def _pre_execution_check(self, tool_calls, tools, messages):
-        if not tool_calls or not hasattr(self, "generate_with_backoff"):
-            return tool_calls
-            
-        # Extract system message (which contains current anchor date and time)
-        system_message = ""
-        for msg in messages:
-            if msg.get("role") == "system":
-                system_message = msg.get("content", "")
-                break
-                
-        # Format the recent conversation history for clean context
-        history_str = ""
-        for msg in messages[-5:]:
-            role = msg.get("role", "").upper()
-            content = msg.get("content", "")
-            if msg.get("tool_calls"):
-                content = f"[Tool Calls]: {json.dumps(msg['tool_calls'], ensure_ascii=False)}"
-            history_str += f"{role}: {content}\n"
-                
-        cleaned_tool_calls = []
-        for tc in tool_calls:
-            try:
-                tc_name = tc.get("function", {}).get("name")
-                tc_args_str = tc.get("function", {}).get("arguments")
-                
-                # Find matching schema
-                tool_schema = None
-                for t in tools:
-                    if t.get("function", {}).get("name") == tc_name:
-                        tool_schema = t
-                        break
-                if not tool_schema:
-                    cleaned_tool_calls.append(tc)
+    @staticmethod
+    def _canon(value):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+    @staticmethod
+    def _response_signature(model_response_data):
+        tool_calls = model_response_data.get("tool_calls") or []
+        if tool_calls:
+            names = tuple(sorted(tc.get("function", {}).get("name", "") for tc in tool_calls))
+            return ("tools",) + names
+        content = model_response_data.get("content")
+        if content:
+            return ("text",)
+        return ("empty",)
+
+    def _consensus_generate(self, inference_data):
+        '''
+        Self-consistency (consensus) decoding for one step.
+        Draws sc_n candidates (1 anchor at the run temperature + sc_n-1 diversity
+        samples), then votes hierarchically: response mode -> tool-name multiset
+        -> per-argument key/value majority. Returns a single model_response_data
+        dict shaped like _parse_api_response output, plus aggregated token counts,
+        latency, and a "consensus_log" entry describing the vote.
+        '''
+        api_response, latency = self._request_tool_call(inference_data)
+        anchor = self._parse_api_response(api_response)
+        anchor["latency"] = latency
+
+        if self.sc_n <= 1 or not hasattr(self, "_request_candidates"):
+            return anchor
+
+        candidates = [anchor]
+        try:
+            candidates.extend(
+                self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
+            )
+        except Exception as e:
+            print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
+            return anchor
+
+        signatures = [self._response_signature(c) for c in candidates]
+        vote_counts = Counter(s for s in signatures if s != ("empty",))
+        consensus_log = {
+            "candidate_signatures": [list(s) for s in signatures],
+        }
+
+        total_input = sum(c.get("input_token") or 0 for c in candidates)
+        total_output = sum(c.get("output_token") or 0 for c in candidates)
+        total_latency = sum(c.get("latency") or 0 for c in candidates)
+
+        if not vote_counts:
+            chosen = anchor
+        else:
+            best_count = max(vote_counts.values())
+            winners = {s for s, v in vote_counts.items() if v == best_count}
+            if signatures[0] in winners:
+                # Tie or win including the anchor: trust the low-temperature sample.
+                winning_signature = signatures[0]
+            else:
+                winning_signature = next(s for s in signatures if s in winners)
+            cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
+            consensus_log["winning_signature"] = list(winning_signature)
+            consensus_log["cluster_size"] = len(cluster)
+
+            chosen = dict(cluster[0])
+            if winning_signature[0] == "tools":
+                chosen["tool_calls"] = self._merge_tool_calls(cluster, inference_data["tools"])
+
+        chosen = dict(chosen)
+        chosen["input_token"] = total_input
+        chosen["output_token"] = total_output
+        chosen["latency"] = total_latency
+        chosen["consensus_log"] = consensus_log
+        return chosen
+
+    def _merge_tool_calls(self, cluster, tools):
+        '''
+        Argument-level majority vote across a cluster of candidates that agree on
+        the tool-name multiset. A parameter key is kept only if a strict majority
+        of candidates include it (or the schema marks it required), which prunes
+        hallucinated optional parameters; each kept key takes its majority value.
+        '''
+        required_by_tool = {}
+        for t in tools:
+            func = t.get("function", {})
+            required_by_tool[func.get("name")] = set(func.get("parameters", {}).get("required", []))
+
+        def parsed_calls(candidate):
+            calls = []
+            for tc in candidate.get("tool_calls") or []:
+                function = tc.get("function", {})
+                name = function.get("name", "")
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except Exception:
+                        arguments = None
+                if not isinstance(arguments, dict):
+                    arguments = None
+                calls.append((name, arguments, tc))
+            # Sort by (name, canonical args) so same-name calls align consistently
+            # across candidates.
+            calls.sort(key=lambda x: (x[0], self._canon(x[1]) if x[1] is not None else ""))
+            return calls
+
+        all_calls = [parsed_calls(c) for c in cluster]
+        representative_calls = all_calls[0]
+
+        merged = []
+        for position, (name, rep_args, rep_tc) in enumerate(representative_calls):
+            variants = []
+            for candidate_calls in all_calls:
+                v_name, v_args, _ = candidate_calls[position]
+                if v_name == name and v_args is not None:
+                    variants.append(v_args)
+
+            if rep_args is None or not variants:
+                merged.append(rep_tc)
+                continue
+
+            n_variants = len(variants)
+            required_params = required_by_tool.get(name, set())
+            key_counts = Counter(k for v in variants for k in v)
+
+            final_args = {}
+            for key, count in key_counts.items():
+                # Strict majority keeps the key; ties are dropped (minimalism bias
+                # against hallucinated optional parameters). Required parameters
+                # are always kept so the vote can never break schema validity.
+                if count * 2 <= n_variants and key not in required_params:
                     continue
-                    
-                verification_prompt = f"""You are a helper filling out a form based on a conversation.
-Think of the tool schema as a blank form, and the conversation as the background context.
+                value_counts = Counter(self._canon(v[key]) for v in variants if key in v)
+                best = max(value_counts.values())
+                top_values = [val for val, c in value_counts.items() if c == best]
+                rep_value = self._canon(rep_args[key]) if key in rep_args else None
+                chosen_value = rep_value if rep_value in top_values else top_values[0]
+                final_args[key] = json.loads(chosen_value)
 
-[SYSTEM CONTEXT]
-{system_message}
+            new_tc = deepcopy(rep_tc)
+            new_tc["function"]["arguments"] = json.dumps(final_args, ensure_ascii=False)
+            merged.append(new_tc)
 
-[CONVERSATION HISTORY]
-{history_str}
-
-[TOOL SCHEMA (THE FORM)]
-{json.dumps(tool_schema, indent=2, ensure_ascii=False)}
-
-[DRAFT RESPONSE]
-{tc_args_str}
-
-Follow these two simple steps to fill out the form correctly:
-1. Extract the Facts: Write a simple list of all values, dates, and actions mentioned or implied in the conversation history.
-2. Fill the Form: Map those facts directly to the fields in the Tool Schema. 
-   - If a schema field has a matching fact, fill it in (ensure dates are resolved to YYYY-MM-DD using the system context anchor, and types match).
-   - If a schema field has no matching fact in the history, leave it blank (omit it entirely).
-
-Output your thoughts under "Facts and Mapping:" and then output the final JSON dictionary under "Form Output:".
-
-Facts and Mapping:
-"""
-                
-                # Call local LLM out-of-band
-                api_response, _ = self.generate_with_backoff(
-                    messages=[{"role": "user", "content": verification_prompt}],
-                    model=self.model_name,
-                    temperature=0.0
-                )
-                choice = api_response.choices[0]
-                message = choice.message
-                corrected_args_str = message.content.strip()
-                
-                # Robustly find and extract the JSON dictionary block using regex
-                import re
-                json_match = re.search(r"\{.*\}", corrected_args_str, re.DOTALL)
-                if json_match:
-                    corrected_args_str = json_match.group(0)
-                else:
-                    # Fallback: strip markdown wrappers if present
-                    if corrected_args_str.startswith("```"):
-                        lines = corrected_args_str.split("\n")
-                        if lines[0].startswith("```json") or lines[0].startswith("```"):
-                            lines = lines[1:]
-                        if lines[-1].startswith("```"):
-                            lines = lines[:-1]
-                        corrected_args_str = "\n".join(lines).strip()
-                
-                # Validate it is valid JSON
-                corrected_args = json.loads(corrected_args_str)
-                if isinstance(corrected_args, dict):
-                    # Replace the arguments inside tc
-                    if isinstance(tc_args_str, str):
-                        tc["function"]["arguments"] = json.dumps(corrected_args, ensure_ascii=False)
-                    else:
-                        tc["function"]["arguments"] = corrected_args
-            except Exception as e:
-                print(f"Pre-execution verification error: {e}", flush=True)
-            cleaned_tool_calls.append(tc)
-        return cleaned_tool_calls
+        return merged
 
     def _request_tool_call(self, inference_data):
         raise NotImplementedError
@@ -307,7 +379,7 @@ Facts and Mapping:
         return new_messages
 
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
-        messages = [{"role": "system", "content": f"Current Date: {env_info}"}]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
         for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
             history_messages = self._add_action_observation(history_task, history_answer_list, consecutive_tool_messages)
             messages.extend(history_messages)
@@ -394,16 +466,14 @@ Facts and Mapping:
             # print(f"Output：", flush=True)
             # for message in messages:
             #     print(json.dumps(message, ensure_ascii=False, indent=4) + "\n", flush=True)
-            api_response, query_latency = self._request_tool_call(inference_data)
-            model_response_data = self._parse_api_response(api_response)
+            model_response_data = self._consensus_generate(inference_data)
+            query_latency = model_response_data.get("latency", 0)
+            consensus_log = model_response_data.pop("consensus_log", None)
             reasoning_content = model_response_data["reasoning_content"]
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             if tool_calls is not None:
-                # 1. Primary: Out-of-Band Pre-Execution Check
-                tool_calls = self._pre_execution_check(tool_calls, tools, messages)
-                
-                # 2. Fallback: Rule-Based Schema Cleaner
+                # Rule-Based Schema Cleaner
                 cleaned_tool_calls = []
                 for tc in tool_calls:
                     try:
@@ -443,6 +513,8 @@ Facts and Mapping:
                     "tool_calls": tool_calls
                 }
             }
+            if consensus_log is not None:
+                inference_log[f"step_{step}"]["consensus"] = consensus_log
 
             if tool_calls is None or len(tool_calls) == 0:
                 if content is None or content == "":

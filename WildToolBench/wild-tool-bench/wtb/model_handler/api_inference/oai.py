@@ -36,6 +36,52 @@ class OpenAIHandler(BaseHandler):
 
         return api_response, latency
 
+    def _request_candidates(self, inference_data, n, temperature):
+        '''
+        Draw n diversity samples for consensus decoding. Tries a single request
+        with the OpenAI `n` parameter (vLLM prefills the prompt once), falling
+        back to sequential requests if the server rejects it.
+        '''
+        try:
+            api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
+                n=n,
+            )
+            response_data = json.loads(api_response.json())
+            usage = response_data.get("usage") or {}
+            candidates = []
+            for i, choice in enumerate(response_data["choices"]):
+                message = choice["message"]
+                candidates.append({
+                    "reasoning_content": message.get("reasoning_content", None),
+                    "content": message.get("content", None),
+                    "tool_calls": message.get("tool_calls", None),
+                    # The batched request reports usage once; attribute it to the
+                    # first candidate so aggregated totals stay accurate.
+                    "input_token": usage.get("prompt_tokens", 0) if i == 0 else 0,
+                    "output_token": usage.get("completion_tokens", 0) if i == 0 else 0,
+                    "latency": latency if i == 0 else 0,
+                })
+            return candidates
+        except Exception as e:
+            print(f"Batched n={n} sampling failed ({e}); sampling sequentially.", flush=True)
+
+        candidates = []
+        for _ in range(n):
+            api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
+            )
+            candidate = self._parse_api_response(api_response)
+            candidate["latency"] = latency
+            candidates.append(candidate)
+        return candidates
+
     def _parse_api_response(self, api_response):
         api_response = json.loads(api_response.json())
         choice = api_response["choices"][0]
