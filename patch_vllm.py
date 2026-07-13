@@ -31,19 +31,19 @@ def main():
     
     if match:
         indent = match.group(1)
-        # Construct indented replacement
+        # Construct replacement string by concatenation to avoid backslashes inside f-strings (for python < 3.12 compatibility)
         replacement = (
-            f"raw_function_calls = []\n"
-            f"{indent}for match in matches:\n"
-            f"{indent}    s = match[0] if match[0] else match[1]\n"
-            f"{indent}    # Robustly extract JSON block using regex\n"
-            f"{indent}    json_match = re.search(r\"\\{.*\\}\", s, re.DOTALL)\n"
-            f"{indent}    if json_match:\n"
-            f"{indent}        s = json_match.group(0)\n"
-            f"{indent}    try:\n"
-            f"{indent}        raw_function_calls.append(json.loads(s))\n"
-            f"{indent}    except Exception as e:\n"
-            f"{indent}        print(f\"[vLLM Patch Warning] Failed to parse tool call: {{s}}. Error: {{e}}\", flush=True)"
+            "raw_function_calls = []\n"
+            + indent + "for match in matches:\n"
+            + indent + "    s = match[0] if match[0] else match[1]\n"
+            + indent + "    # Robustly extract JSON block using regex\n"
+            + indent + "    json_match = re.search(r\"\\{.*\\}\", s, re.DOTALL)\n"
+            + indent + "    if json_match:\n"
+            + indent + "        s = json_match.group(0)\n"
+            + indent + "    try:\n"
+            + indent + "        raw_function_calls.append(json.loads(s))\n"
+            + indent + "    except Exception as e:\n"
+            + indent + "        print(f\"[vLLM Patch Warning] Failed to parse tool call: {s}. Error: {e}\", flush=True)"
         )
         
         # Replace the matched block with the new implementation
