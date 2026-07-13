@@ -72,6 +72,25 @@ without batched sampling (DeepSeek/HunYuan) automatically run anchor-only.
 The vote for each step is recorded in the result JSONL under
 `inference_log.step_k.consensus` for later analysis.
 
+### Robustness to server-side parse failures
+
+At `WTB_SC_TEMP=0.8` a small model sometimes emits a truncated/malformed tool
+call that vLLM's `hermes` parser cannot parse; vLLM then returns the raw text as
+`content` with no `tool_calls` (this is what the `[vLLM Patch Warning] Failed to
+parse tool call...` lines report — harmless, non-fatal). If left as-is that text
+would count as an "answer" vote and could outvote a correct tool-call candidate.
+So before voting, each candidate is normalized (`_normalize_response`):
+
+- If the content is a recoverable tool-call attempt (e.g. a `<tool_call>` block or
+  a bare `{"name": ...}` JSON, possibly truncated), it is repaired via brace
+  balancing and converted back into a real tool call so it joins the tool cluster.
+- If it is an unrecoverable attempt, its content is blanked so the candidate
+  **abstains** from the vote instead of masquerading as a valid text answer.
+
+This is done in portable handler code (not by patching vLLM), so it also salvages
+calls the server-side patch drops. The single-sample path (`WTB_SC_N=1`) returns
+the model's response unchanged.
+
 ## Configuration
 
 | Env var | Default | Meaning |
@@ -81,21 +100,25 @@ The vote for each step is recorded in the result JSONL under
 
 ## Running on SOL
 
-Same command as before:
+See `SOL_VLLM_GUIDE.md` for the full interactive-session walkthrough. In short,
+after starting the vLLM server (with `--enable-auto-tool-choice --tool-call-parser
+hermes`, and `python3 patch_vllm.py` applied once):
 
 ```bash
-sbatch run_wtb_vllm.sh Qwen/Qwen2.5-7B-Instruct
+cd WildToolBench/wild-tool-bench
+cp .env.example .env    # one-time; the gitignored .env is not carried by git pull
+python3 -u -m wtb.openfunctions_evaluation \
+  --model Qwen/Qwen2.5-7B-Instruct --num-threads 4 --result-dir result_consensus
+python3 -u -m wtb.eval_runner \
+  --model Qwen_Qwen2.5-7B-Instruct --result-dir result_consensus --score-dir score_consensus
 ```
 
 Notes:
-- Results are written to **`result_consensus/` + `score_consensus/`** so the
-  committed baseline in `result/` + `score/` stays intact for comparison. (The
-  generator skips ids that already have results, so re-using `result/` would
-  silently skip the whole run.)
-- The script now passes `--enable-auto-tool-choice --tool-call-parser hermes` to
-  vLLM (needed for Qwen tool calls; pass `llama3_json` as the 2nd sbatch arg for
-  Llama models) and fixes the scorer invocation to use the underscore model name.
-- Generation resumes from partial results — if the job hits the time limit, just
-  resubmit it.
-- Ablations: `WTB_SC_N=1 sbatch run_wtb_vllm.sh ...` isolates the triage-prompt
-  effect; comparing against `score/` isolates the total effect.
+- Results go to **`result_consensus/` + `score_consensus/`** so the committed
+  baseline in `result/` + `score/` stays intact for comparison. (The generator
+  skips ids that already have results, so re-using `result/` would silently skip
+  the whole run.)
+- The scorer takes the **underscore** form of the model name (`Qwen_Qwen2.5-7B-Instruct`).
+- Generation resumes from partial results — if the job hits the time limit, just rerun it.
+- Ablation: prefix inference with `WTB_SC_N=1` and use fresh result/score dirs to
+  isolate the triage-prompt effect; comparing against `score/` isolates the total effect.

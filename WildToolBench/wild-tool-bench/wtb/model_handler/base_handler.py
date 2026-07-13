@@ -114,6 +114,126 @@ class BaseHandler:
         return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
     @staticmethod
+    def _looks_like_tool_attempt(content):
+        # Conservative: only a bare tool-call JSON / <tool_call> block counts as an
+        # attempt. Genuine prose never starts with {"name" and won't false-positive.
+        if not isinstance(content, str):
+            return False
+        if "<tool_call>" in content or "</tool_call>" in content:
+            return True
+        stripped = content.lstrip()
+        return (
+            stripped.startswith("{")
+            and '"name"' in stripped
+            and ('"arguments"' in stripped or '"parameters"' in stripped)
+        )
+
+    @staticmethod
+    def _repair_json(text):
+        # Close the unbalanced braces/brackets (and an open string) left by a
+        # truncated generation, in the correct reverse order. Best-effort only.
+        stack = []
+        in_str = False
+        escape = False
+        for ch in text:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in "{[":
+                stack.append(ch)
+            elif ch == "}" and stack and stack[-1] == "{":
+                stack.pop()
+            elif ch == "]" and stack and stack[-1] == "[":
+                stack.pop()
+        repaired = text
+        if in_str:
+            repaired += '"'
+        for opener in reversed(stack):
+            repaired += "}" if opener == "{" else "]"
+        return repaired
+
+    def _loads_lenient(self, text):
+        import re
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+            text = re.sub(r"```\s*$", "", text).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        start = text.find("{")
+        if start == -1:
+            return None
+        snippet = text[start:]
+        try:
+            # raw_decode tolerates trailing junk after the first complete object.
+            return json.JSONDecoder().raw_decode(snippet)[0]
+        except Exception:
+            pass
+        try:
+            return json.loads(self._repair_json(snippet))
+        except Exception:
+            return None
+
+    def _recover_tool_calls_from_content(self, content):
+        '''
+        Salvage tool call(s) from raw content that vLLM returned unparsed (the
+        server-side hermes parser gives up on truncated/multi-object JSON and
+        falls back to text). Returns a list of tool_call dicts, or None.
+        '''
+        import re
+        blocks = re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", content, re.DOTALL)
+        if not blocks:
+            blocks = [content]
+        recovered = []
+        for block in blocks:
+            obj = self._loads_lenient(block)
+            if not isinstance(obj, dict) or "name" not in obj:
+                continue
+            args = obj.get("arguments", obj.get("parameters", {}))
+            if isinstance(args, str):
+                parsed = self._loads_lenient(args)
+                args = parsed if isinstance(parsed, dict) else {}
+            if not isinstance(args, dict):
+                args = {}
+            recovered.append({
+                "id": "toolu_recovered_" + generate_random_string(16),
+                "type": "function",
+                "function": {"name": obj["name"], "arguments": json.dumps(args, ensure_ascii=False)},
+            })
+        return recovered or None
+
+    def _normalize_response(self, data):
+        '''
+        Rescue tool calls that came back as text because the server-side parser
+        failed. If the content is a recoverable tool-call attempt, convert it into
+        proper tool_calls; if it is an unrecoverable attempt, blank the content so
+        it ABSTAINS from voting instead of masquerading as a valid text/clarify
+        answer (which could otherwise outvote a correct tool-call candidate).
+        '''
+        if data.get("tool_calls"):
+            return data
+        content = data.get("content")
+        if not self._looks_like_tool_attempt(content):
+            return data
+        recovered = self._recover_tool_calls_from_content(content)
+        if recovered:
+            data["tool_calls"] = recovered
+            data["content"] = None
+        else:
+            data["content"] = None
+        return data
+
+    @staticmethod
     def _response_signature(model_response_data):
         tool_calls = model_response_data.get("tool_calls") or []
         if tool_calls:
@@ -140,14 +260,16 @@ class BaseHandler:
         if self.sc_n <= 1 or not hasattr(self, "_request_candidates"):
             return anchor
 
-        candidates = [anchor]
         try:
-            candidates.extend(
-                self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
-            )
+            extra = self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
         except Exception as e:
             print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
             return anchor
+
+        # Normalize copies for voting (recover parser-dropped tool calls / abstain
+        # on unrecoverable ones) while keeping the faithful anchor for fallback.
+        candidates = [self._normalize_response(dict(anchor))]
+        candidates.extend(self._normalize_response(dict(c)) for c in extra)
 
         signatures = [self._response_signature(c) for c in candidates]
         vote_counts = Counter(s for s in signatures if s != ("empty",))

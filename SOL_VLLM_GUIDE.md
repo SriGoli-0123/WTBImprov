@@ -7,7 +7,8 @@ This guide walks you through setting up a Conda environment, launching a vLLM se
 ## 📂 What this Workspace Contains
 - **Auto-Fallbacks for vLLM:** We modified `wtb/model_handler/handler_map.py` to use a `defaultdict`. Any Hugging Face model loaded via vLLM (e.g. `meta-llama/Llama-3.1-8B-Instruct` or `Qwen/Qwen2.5-7B-Instruct`) will automatically fallback to the `OpenAIHandler` without needing manual code mapping edits.
 - **Preconfigured Endpoints:** The `.env` file points to `http://localhost:8000/v1` (the default port for vLLM's OpenAI API server).
-- **Automation Script:** [run_wtb_vllm.sh](file:///Users/sriharshithgoli/Desktop/wildtoolbench_workspace_vllm/run_wtb_vllm.sh) is a Slurm batch file that requests a GPU node, starts the vLLM server, polls until it is ready, runs the evaluations, and cleans up.
+- **Consensus decoding + triage prompt:** The improvement method (see `IMPROVEMENT_METHOD.md`). Controlled by `WTB_SC_N` (candidates/step, default 5; `1` disables voting) and `WTB_SC_TEMP` (diversity temperature, default 0.8).
+- **`patch_vllm.py`:** Patches vLLM's `hermes_tool_parser` so it can extract multiple/parallel tool calls from one response. Run it once after installing vLLM (and after any vLLM reinstall). The handler also recovers/abstains client-side, so occasional `[vLLM Patch Warning] Failed to parse tool call...` lines are harmless (a truncated generation that would fail anyway).
 
 ---
 
@@ -65,59 +66,52 @@ cd ..
 
 ---
 
-## 🚀 Execution Methods on SOL
-
-### Method A: Automated Slurm Batch Run (Recommended)
-This uses the Slurm workload manager to queue your job, request a GPU node, and execute the benchmark fully in the background.
-
-Submit the script with:
-```bash
-sbatch run_wtb_vllm.sh <huggingface_model_id>
-```
-*Example (default):*
-```bash
-sbatch run_wtb_vllm.sh Qwen/Qwen2.5-7B-Instruct
-```
-*Example (70B model - may require more GPU memory, e.g. a larger partition/GRES):*
-```bash
-sbatch run_wtb_vllm.sh meta-llama/Llama-3.1-70B-Instruct
-```
-Monitor the outputs in real-time by viewing the generated log:
-```bash
-tail -f wtb_vllm_*.log
-```
-
----
-
-### Method B: Interactive GPU Session Run
-If you want to run steps manually, debug, or interact with the server, request an interactive GPU allocation:
+## 🚀 Running the Benchmark (Interactive GPU Session)
 
 1. **Request a GPU Node:**
    ```bash
-   srun -p solgpu -G 1 -c 8 --mem=40G -t 4:00:00 --pty bash
+   srun -p solgpu -G 1 -c 8 --mem=40G -t 6:00:00 --pty bash
    ```
+   (Consensus decoding samples 5 candidates/step, so allow ~2x the baseline wall time.)
+
 2. **Activate Environment & Start vLLM:**
-   Once logged into the GPU compute node, start the server in the background:
+   Once logged into the GPU compute node:
    ```bash
    module load mamba/conda
    conda activate wtb_vllm
-   
+
+   # One-time (and after any vLLM reinstall): patch the tool-call parser
+   python3 patch_vllm.py
+
    python3 -m vllm.entrypoints.openai.api_server \
      --model Qwen/Qwen2.5-7B-Instruct \
      --port 8000 \
-     --dtype auto &
+     --dtype auto \
+     --enable-auto-tool-choice \
+     --tool-call-parser hermes &
    ```
-   *Wait for the log to output: `Uvicorn running on http://127.0.0.1:8000`*
+   *Wait for the log to output: `Uvicorn running on http://127.0.0.1:8000`.*
+   (For Llama models use `--tool-call-parser llama3_json` instead of `hermes`.)
+
 3. **Execute Benchmark Scripts:**
    ```bash
    cd WildToolBench/wild-tool-bench
-   
+   cp .env.example .env          # one-time: git does not carry the gitignored .env
+
+   # Consensus decoding is ON by default (WTB_SC_N=5). Results go to a separate
+   # folder so the committed baseline in result/ + score/ is kept for comparison.
    # 1. Run inference (makes API calls to vLLM)
-   python3 -u -m wtb.openfunctions_evaluation --model Qwen/Qwen2.5-7B-Instruct --num-threads 4
-   
-   # 2. Score output and save metrics
-   python3 -u -m wtb.eval_runner --model Qwen/Qwen2.5-7B-Instruct
+   python3 -u -m wtb.openfunctions_evaluation \
+     --model Qwen/Qwen2.5-7B-Instruct --num-threads 4 --result-dir result_consensus
+
+   # 2. Score output and save metrics (note: underscore form of the model name)
+   python3 -u -m wtb.eval_runner \
+     --model Qwen_Qwen2.5-7B-Instruct --result-dir result_consensus --score-dir score_consensus
    ```
+   *Ablation — prompt only, voting off:* prefix inference with `WTB_SC_N=1` and use
+   fresh dirs (e.g. `--result-dir result_prompt_only` / `--score-dir score_prompt_only`),
+   because generation resumes from and skips any ids already present in a result dir.
+
 4. **Shutdown Server:**
    ```bash
    kill %1
