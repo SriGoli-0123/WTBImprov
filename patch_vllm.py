@@ -33,8 +33,9 @@ def main():
         indent = match.group(1)
         matches_var = match.group(2)
         # Construct replacement string by concatenation to avoid backslashes inside f-strings (for python < 3.12 compatibility)
+        # Prepend indent to raw_function_calls so it aligns correctly inside the try block
         replacement = (
-            "raw_function_calls = []\n"
+            indent + "raw_function_calls = []\n"
             + indent + "for match in " + matches_var + ":\n"
             + indent + "    s = match[0] if match[0] else match[1]\n"
             + indent + "    # Robustly extract JSON block using regex\n"
