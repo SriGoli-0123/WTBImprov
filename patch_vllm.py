@@ -7,7 +7,6 @@ def main():
     if not os.path.exists(target_path):
         print(f"Error: Target file not found at {target_path}")
         print("Checking default python environment paths...")
-        # Fallback: try to find vllm in current python site-packages
         try:
             import vllm
             vllm_path = os.path.dirname(vllm.__file__)
@@ -25,37 +24,42 @@ def main():
     with open(target_path, "r") as f:
         content = f.read()
 
-    # Define target snippet to replace
-    target_pattern = """        raw_function_calls = [
-            json.loads(match[0] if match[0] else match[1])
-            for match in matches
-        ]"""
-
-    # Replacement snippet with robust JSON extraction and try-except safety
-    replacement = """        raw_function_calls = []
-        for match in matches:
-            s = match[0] if match[0] else match[1]
-            # Robustly extract JSON block using regex to avoid trailing text/comments
-            json_match = re.search(r"\\{.*\\}", s, re.DOTALL)
-            if json_match:
-                s = json_match.group(0)
-            try:
-                raw_function_calls.append(json.loads(s))
-            except Exception as e:
-                # Print warning and skip invalid candidate instead of crashing server
-                print(f"[vLLM Patch Warning] Failed to parse tool call: {s}. Error: {e}", flush=True)"""
-
-    if target_pattern in content:
-        new_content = content.replace(target_pattern, replacement)
+    # Find the target block using flexible whitespace regex to get exact indentation
+    pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*matches\s*\]"
+    
+    match = re.search(pattern, content, re.MULTILINE)
+    
+    if match:
+        indent = match.group(1)
+        # Construct indented replacement
+        replacement = (
+            f"raw_function_calls = []\n"
+            f"{indent}for match in matches:\n"
+            f"{indent}    s = match[0] if match[0] else match[1]\n"
+            f"{indent}    # Robustly extract JSON block using regex\n"
+            f"{indent}    json_match = re.search(r\"\\{.*\\}\", s, re.DOTALL)\n"
+            f"{indent}    if json_match:\n"
+            f"{indent}        s = json_match.group(0)\n"
+            f"{indent}    try:\n"
+            f"{indent}        raw_function_calls.append(json.loads(s))\n"
+            f"{indent}    except Exception as e:\n"
+            f"{indent}        print(f\"[vLLM Patch Warning] Failed to parse tool call: {{s}}. Error: {{e}}\", flush=True)"
+        )
+        
+        # Replace the matched block with the new implementation
+        new_content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+        
         with open(target_path, "w") as f:
             f.write(new_content)
-        print("Successfully patched hermes_tool_parser.py!")
+        print("Successfully patched hermes_tool_parser.py using regex alignment!")
+        
     else:
         # Check if already patched
         if "[vLLM Patch Warning]" in content:
             print("File is already patched.")
         else:
-            print("Error: Could not locate the target json.loads block in the file. Check if file version matches.")
+            print("Error: Could not locate the target json.loads block in the file.")
+            print("Please check file content around lines 130-150.")
 
 if __name__ == "__main__":
     main()
