@@ -25,7 +25,6 @@ def main():
         content = f.read()
 
     # Step 1: Self-healing check. Revert any corrupted/previous patch attempt if present.
-    # We look for "raw_decode" or "vLLM Patch Warning" to identify a patched state
     if "raw_decode" in content or "[vLLM Patch Warning]" in content:
         print("Detecting previous patch. Reverting to original state...")
         # Regex matches our entire patched loop structure and isolates the original matches variable
@@ -45,7 +44,7 @@ def main():
             f.write(content)
         print("Successfully reverted previous patch. Proceeding to apply updated patch...")
 
-    # Step 2: Apply the correct regex aligned patch with backslash-free characters (chr codes)
+    # Step 2: Apply the correct regex aligned patch with dictionary type-checks
     pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*([a-zA-Z0-9_]+)\s*\]"
     
     match = re.search(pattern, content, re.MULTILINE)
@@ -54,7 +53,8 @@ def main():
         indent = match.group(1)
         matches_var = match.group(2)
         
-        # Construct replacement block using character codes instead of backslashes to bypass escape parsing
+        # Construct replacement block where we strictly verify raw_decode output is a dictionary representation
+        # of a tool call (preventing raw string parses from causing TypeError: string indices must be integers)
         replacement = (
             indent + "raw_function_calls = []\n"
             + indent + "for match in " + matches_var + ":\n"
@@ -69,9 +69,10 @@ def main():
             + indent + "            break\n"
             + indent + "        try:\n"
             + indent + "            obj, new_pos = decoder.raw_decode(s, pos)\n"
-            + indent + "            raw_function_calls.append(obj)\n"
+            + indent + "            if isinstance(obj, dict) and \"name\" in obj:\n"
+            + indent + "                raw_function_calls.append(obj)\n"
+            + indent + "                parsed_any = True\n"
             + indent + "            pos = new_pos\n"
-            + indent + "            parsed_any = True\n"
             + indent + "        except Exception:\n"
             + indent + "            pos += 1\n"
             + indent + "    if not parsed_any:\n"
