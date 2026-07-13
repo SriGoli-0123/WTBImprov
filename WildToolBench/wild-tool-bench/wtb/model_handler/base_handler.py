@@ -43,6 +43,14 @@ class BaseHandler:
         #   WTB_SC_TEMP: temperature for the diversity samples (anchor keeps run temperature)
         self.sc_n = int(os.getenv("WTB_SC_N", "5"))
         self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
+        # System prompt mode:
+        #   "triage"  - behavioral action-mode protocol (default)
+        #   "minimal" - bare "Current Date: ..." exactly like the original benchmark
+        self.sys_mode = os.getenv("WTB_SYS_MODE", "triage").strip().lower()
+        # Session Ledger: terse bookkeeping-style digest of the dialogue history,
+        # re-injected next to the current turn (non-prescriptive; counters
+        # attention dilution over long histories). WTB_LEDGER=0 disables.
+        self.ledger_enabled = os.getenv("WTB_LEDGER", "1").strip().lower() not in ("0", "false", "")
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
@@ -179,10 +187,21 @@ class BaseHandler:
             return json.JSONDecoder().raw_decode(snippet)[0]
         except Exception:
             pass
-        try:
-            return json.loads(self._repair_json(snippet))
-        except Exception:
-            return None
+        # Truncation repair: balance quotes/brackets; if the cut landed mid-token
+        # (e.g. '..., {"t'), progressively trim back to the last complete element.
+        work = snippet
+        for _ in range(60):
+            try:
+                return json.loads(self._repair_json(work))
+            except Exception:
+                pass
+            cut = max(work.rfind(","), work.rfind("{"), work.rfind("["), work.rfind('"'))
+            if cut <= 0:
+                break
+            work = work[:cut].rstrip().rstrip(",")
+            if not work:
+                break
+        return None
 
     def _recover_tool_calls_from_content(self, content):
         '''
@@ -500,13 +519,87 @@ class BaseHandler:
 
         return new_messages
 
+    # Session Ledger: "double-entry bookkeeping x dialogue state". A bookkeeper
+    # never re-reads all correspondence - every essential value is one terse
+    # ledger line. Injected at the recency position (right before the current
+    # turn) so salient facts are not diluted by a long history. Purely
+    # informational: it records what is known, never what to do.
+    LEDGER_PROMPT = (
+        "You are a meticulous bookkeeper for a conversation. Write its ledger: only essential "
+        "facts, one per line, telegraphic style. Record values the user stated (IDs, emails, "
+        "dates, names, locations, amounts), key values tools returned, and requests not yet "
+        "fulfilled. No commentary, no advice, no questions. At most 12 lines. "
+        "If nothing essential, output only: NONE"
+    )
+
+    def _build_session_ledger(self, history_messages, env_info):
+        if not hasattr(self, "generate_with_backoff"):
+            return None
+        lines = []
+        for msg in history_messages:
+            role = msg.get("role")
+            if role == "system":
+                continue
+            if role == "assistant" and msg.get("tool_calls"):
+                calls = []
+                for tc in msg["tool_calls"]:
+                    function = tc.get("function", {})
+                    calls.append(str(function.get("name")) + " " + str(function.get("arguments"))[:200])
+                lines.append("assistant tool_calls: " + "; ".join(calls))
+            else:
+                content = msg.get("content")
+                if content:
+                    content = str(content)
+                    if role == "tool":
+                        content = content[:400]
+                    lines.append(str(role) + ": " + content)
+        if not lines:
+            return None
+        try:
+            api_response, _ = self.generate_with_backoff(
+                messages=[
+                    {"role": "system", "content": self.LEDGER_PROMPT},
+                    {"role": "user", "content": "Current Date: " + str(env_info) + "\n\nDialogue:\n" + "\n".join(lines)},
+                ],
+                model=self.model_name,
+                temperature=0.0,
+            )
+            ledger = api_response.choices[0].message.content
+        except Exception as e:
+            print(f"Session ledger generation failed, continuing without it: {e}", flush=True)
+            return None
+        if not ledger:
+            return None
+        ledger = ledger.strip()
+        if not ledger or ledger.upper().startswith("NONE"):
+            return None
+        # Enforce terseness even if the model rambles.
+        ledger_lines = [l.strip() for l in ledger.splitlines() if l.strip()][:12]
+        return "\n".join(ledger_lines)
+
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
+        if self.sys_mode == "minimal":
+            system_content = f"Current Date: {env_info}"
+        else:
+            system_content = SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)
+        messages = [{"role": "system", "content": system_content}]
         for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
             history_messages = self._add_action_observation(history_task, history_answer_list, consecutive_tool_messages)
             messages.extend(history_messages)
         messages.append({"role": "user", "content": current_task})
         messages = self._convert_to_tool_calls(messages)
+
+        if self.ledger_enabled and history_tasks:
+            ledger = self._build_session_ledger(messages[:-1], env_info)
+            if ledger:
+                messages.insert(
+                    len(messages) - 1,
+                    {
+                        "role": "system",
+                        "content": "Session ledger - essential facts on record so far "
+                                   "(the full dialogue above remains authoritative):\n" + ledger,
+                    },
+                )
 
         return messages
 

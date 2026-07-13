@@ -91,12 +91,43 @@ This is done in portable handler code (not by patching vLLM), so it also salvage
 calls the server-side patch drops. The single-sample path (`WTB_SC_N=1`) returns
 the model's response unchanged.
 
+### 3. Session Ledger (double-entry bookkeeping x dialogue state)
+
+*A bookkeeper never re-reads all correspondence — every essential value is one
+terse ledger line.* Before each history-bearing task, one extra LLM call (temp 0)
+distills the dialogue so far into at most 12 telegraphic fact lines — values the
+user stated (IDs, emails, dates, names, amounts), key tool-returned values, and
+unmet requests — and injects them as a system note **immediately before the
+current user turn** (the recency position). The full dialogue stays in context;
+the ledger only re-surfaces the essentials where attention is strongest.
+
+This directly targets the paper's *Self-Conditioning Bias / Attention Dilution*
+finding (accuracy decays 45%→26% across turns as history buries salient facts),
+and unlike the triage prompt it is **non-prescriptive**: it records what is
+known, never what to do — so it cannot narrow the model's decision policy.
+Failures degrade gracefully (ledger generation errors are skipped; a `NONE`
+ledger is not injected).
+
 ## Configuration
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `WTB_SC_N` | 5 | candidates per step; `1` disables voting entirely |
 | `WTB_SC_TEMP` | 0.8 | temperature of the diversity samples |
+| `WTB_SYS_MODE` | `triage` | `triage` = behavioral protocol prompt; `minimal` = bare `Current Date:` exactly like the original benchmark |
+| `WTB_LEDGER` | 1 | `1` = inject the Session Ledger; `0` = off |
+
+### Suggested experiment matrix
+
+| Run | Config | Isolates |
+|---|---|---|
+| baseline | (committed `score/`) | raw model |
+| voting only | `WTB_SYS_MODE=minimal WTB_LEDGER=0` | pure capability elicitation |
+| ledger, no prompt | `WTB_SYS_MODE=minimal WTB_LEDGER=1` | the non-prescriptive hypothesis |
+| full | defaults | everything combined |
+
+Use a fresh `--result-dir`/`--score-dir` per run — generation resumes from and
+skips any ids already present in a result dir.
 
 ## Running on SOL
 

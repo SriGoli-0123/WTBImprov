@@ -7,7 +7,7 @@ This guide walks you through setting up a Conda environment, launching a vLLM se
 ## 📂 What this Workspace Contains
 - **Auto-Fallbacks for vLLM:** We modified `wtb/model_handler/handler_map.py` to use a `defaultdict`. Any Hugging Face model loaded via vLLM (e.g. `meta-llama/Llama-3.1-8B-Instruct` or `Qwen/Qwen2.5-7B-Instruct`) will automatically fallback to the `OpenAIHandler` without needing manual code mapping edits.
 - **Preconfigured Endpoints:** The `.env` file points to `http://localhost:8000/v1` (the default port for vLLM's OpenAI API server).
-- **Consensus decoding + triage prompt:** The improvement method (see `IMPROVEMENT_METHOD.md`). Controlled by `WTB_SC_N` (candidates/step, default 5; `1` disables voting) and `WTB_SC_TEMP` (diversity temperature, default 0.8).
+- **Consensus decoding + triage prompt + Session Ledger:** The improvement method (see `IMPROVEMENT_METHOD.md`). Knobs: `WTB_SC_N` (candidates/step, default 5; `1` disables voting), `WTB_SC_TEMP` (diversity temperature, default 0.8), `WTB_SYS_MODE` (`triage` default / `minimal` = original bare date prompt), `WTB_LEDGER` (`1` default = terse fact ledger injected next to the current turn / `0` off).
 - **`patch_vllm.py`:** Patches vLLM's `hermes_tool_parser` so it can extract multiple/parallel tool calls from one response. Run it once after installing vLLM (and after any vLLM reinstall). The handler also recovers/abstains client-side, so occasional `[vLLM Patch Warning] Failed to parse tool call...` lines are harmless (a truncated generation that would fail anyway).
 
 ---
