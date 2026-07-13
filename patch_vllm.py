@@ -25,12 +25,13 @@ def main():
         content = f.read()
 
     # Step 1: Self-healing check. Revert any corrupted/previous patch attempt if present.
-    if "[vLLM Patch Warning]" in content or "raw_decode" in content:
+    # We look for "raw_decode" or "vLLM Patch Warning" to identify a patched state
+    if "raw_decode" in content or "[vLLM Patch Warning]" in content:
         print("Detecting previous patch. Reverting to original state...")
-        # Match from raw_function_calls to the end of the patch loop
+        # Regex matches our entire patched loop structure and isolates the original matches variable
         corrupted_pattern = r"(?:[ \t]*)raw_function_calls\s*=\s*\[\]\s*\n\s*for match in ([a-zA-Z0-9_]+):.*?(?:flush=True\)|pos \+= 1\s*\n\s*tool_calls)"
         
-        # Original block replacement format
+        # Original clean block replacement
         original_block = (
             "                raw_function_calls = [\n"
             "                    json.loads(match[0] if match[0] else match[1])\n"
@@ -38,15 +39,13 @@ def main():
             "                ]"
         )
         
-        # We search with re.DOTALL so the dot matches newlines
         content = re.sub(corrupted_pattern, original_block, content, flags=re.DOTALL)
         
-        # Save reverted file first
         with open(target_path, "w") as f:
             f.write(content)
         print("Successfully reverted previous patch. Proceeding to apply updated patch...")
 
-    # Step 2: Apply the correct regex aligned patch with iterative raw_decode parsing
+    # Step 2: Apply the correct regex aligned patch with backslash-free characters (chr codes)
     pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*([a-zA-Z0-9_]+)\s*\]"
     
     match = re.search(pattern, content, re.MULTILINE)
@@ -54,7 +53,8 @@ def main():
     if match:
         indent = match.group(1)
         matches_var = match.group(2)
-        # Construct replacement string using concatenation
+        
+        # Construct replacement block using character codes instead of backslashes to bypass escape parsing
         replacement = (
             indent + "raw_function_calls = []\n"
             + indent + "for match in " + matches_var + ":\n"
@@ -63,7 +63,7 @@ def main():
             + indent + "    pos = 0\n"
             + indent + "    parsed_any = False\n"
             + indent + "    while pos < len(s):\n"
-            + indent + "        while pos < len(s) and s[pos] in \" \\t\\n\\r,\":\n"
+            + indent + "        while pos < len(s) and s[pos] in chr(32) + chr(9) + chr(10) + chr(13) + \",\":\n"
             + indent + "            pos += 1\n"
             + indent + "        if pos >= len(s):\n"
             + indent + "            break\n"
