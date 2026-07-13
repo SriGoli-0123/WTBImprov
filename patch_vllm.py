@@ -24,13 +24,13 @@ def main():
     with open(target_path, "r") as f:
         content = f.read()
 
-    # Step 1: Self-healing check. Revert any corrupted patch attempt if present.
-    if "[vLLM Patch Warning]" in content:
-        print("Detecting previous corrupted patch. Reverting to original state...")
-        # Match the corrupted block (handling variable names like function_call_tuples or matches)
-        corrupted_pattern = r"(?:[ \t]*)raw_function_calls\s*=\s*\[\]\s*\n\s*for match in ([a-zA-Z0-9_]+):.*?flush=True\)"
+    # Step 1: Self-healing check. Revert any corrupted/previous patch attempt if present.
+    if "[vLLM Patch Warning]" in content or "raw_decode" in content:
+        print("Detecting previous patch. Reverting to original state...")
+        # Match from raw_function_calls to the end of the patch loop
+        corrupted_pattern = r"(?:[ \t]*)raw_function_calls\s*=\s*\[\]\s*\n\s*for match in ([a-zA-Z0-9_]+):.*?(?:flush=True\)|pos \+= 1\s*\n\s*tool_calls)"
         
-        # Original block replacement format (reinserting group 1 as the loop variable)
+        # Original block replacement format
         original_block = (
             "                raw_function_calls = [\n"
             "                    json.loads(match[0] if match[0] else match[1])\n"
@@ -38,13 +38,15 @@ def main():
             "                ]"
         )
         
+        # We search with re.DOTALL so the dot matches newlines
         content = re.sub(corrupted_pattern, original_block, content, flags=re.DOTALL)
-        # Save reverted file first to ensure a clean state
+        
+        # Save reverted file first
         with open(target_path, "w") as f:
             f.write(content)
-        print("Successfully reverted corruption. Proceeding to apply clean patch...")
+        print("Successfully reverted previous patch. Proceeding to apply updated patch...")
 
-    # Step 2: Apply the correct regex aligned patch
+    # Step 2: Apply the correct regex aligned patch with iterative raw_decode parsing
     pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*([a-zA-Z0-9_]+)\s*\]"
     
     match = re.search(pattern, content, re.MULTILINE)
@@ -52,20 +54,28 @@ def main():
     if match:
         indent = match.group(1)
         matches_var = match.group(2)
-        # Construct replacement string by concatenation to avoid backslashes inside f-strings
-        # Prepend indent to raw_function_calls so it aligns correctly inside the try block
+        # Construct replacement string using concatenation
         replacement = (
             indent + "raw_function_calls = []\n"
             + indent + "for match in " + matches_var + ":\n"
             + indent + "    s = match[0] if match[0] else match[1]\n"
-            + indent + "    # Robustly extract JSON block using regex\n"
-            + indent + "    json_match = re.search(r\"\\{.*\\}\", s, re.DOTALL)\n"
-            + indent + "    if json_match:\n"
-            + indent + "        s = json_match.group(0)\n"
-            + indent + "    try:\n"
-            + indent + "        raw_function_calls.append(json.loads(s))\n"
-            + indent + "    except Exception as e:\n"
-            + indent + "        print(f\"[vLLM Patch Warning] Failed to parse tool call: {s}. Error: {e}\", flush=True)"
+            + indent + "    decoder = json.JSONDecoder()\n"
+            + indent + "    pos = 0\n"
+            + indent + "    parsed_any = False\n"
+            + indent + "    while pos < len(s):\n"
+            + indent + "        while pos < len(s) and s[pos] in \" \\t\\n\\r,\":\n"
+            + indent + "            pos += 1\n"
+            + indent + "        if pos >= len(s):\n"
+            + indent + "            break\n"
+            + indent + "        try:\n"
+            + indent + "            obj, new_pos = decoder.raw_decode(s, pos)\n"
+            + indent + "            raw_function_calls.append(obj)\n"
+            + indent + "            pos = new_pos\n"
+            + indent + "            parsed_any = True\n"
+            + indent + "        except Exception:\n"
+            + indent + "            pos += 1\n"
+            + indent + "    if not parsed_any:\n"
+            + indent + "        print(f\"[vLLM Patch Warning] Failed to parse tool call from: {s}\", flush=True)"
         )
         
         # Replace the matched block with the new implementation
@@ -77,11 +87,10 @@ def main():
         
     else:
         # Check if already patched
-        if "[vLLM Patch Warning]" in content:
-            print("File is already patched.")
+        if "raw_decode" in content:
+            print("File is already patched with raw_decode parser.")
         else:
             print("Error: Could not locate the target json.loads block in the file.")
-            print("Please check file content around lines 130-150.")
 
 if __name__ == "__main__":
     main()
