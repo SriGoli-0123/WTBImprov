@@ -24,7 +24,27 @@ def main():
     with open(target_path, "r") as f:
         content = f.read()
 
-    # Find the target block using flexible whitespace regex to get exact indentation and variable name
+    # Step 1: Self-healing check. Revert any corrupted patch attempt if present.
+    if "[vLLM Patch Warning]" in content:
+        print("Detecting previous corrupted patch. Reverting to original state...")
+        # Match the corrupted block (handling variable names like function_call_tuples or matches)
+        corrupted_pattern = r"(?:[ \t]*)raw_function_calls\s*=\s*\[\]\s*\n\s*for match in ([a-zA-Z0-9_]+):.*?flush=True\)"
+        
+        # Original block replacement format (reinserting group 1 as the loop variable)
+        original_block = (
+            "                raw_function_calls = [\n"
+            "                    json.loads(match[0] if match[0] else match[1])\n"
+            "                    for match in \\1\n"
+            "                ]"
+        )
+        
+        content = re.sub(corrupted_pattern, original_block, content, flags=re.DOTALL)
+        # Save reverted file first to ensure a clean state
+        with open(target_path, "w") as f:
+            f.write(content)
+        print("Successfully reverted corruption. Proceeding to apply clean patch...")
+
+    # Step 2: Apply the correct regex aligned patch
     pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*([a-zA-Z0-9_]+)\s*\]"
     
     match = re.search(pattern, content, re.MULTILINE)
@@ -32,7 +52,7 @@ def main():
     if match:
         indent = match.group(1)
         matches_var = match.group(2)
-        # Construct replacement string by concatenation to avoid backslashes inside f-strings (for python < 3.12 compatibility)
+        # Construct replacement string by concatenation to avoid backslashes inside f-strings
         # Prepend indent to raw_function_calls so it aligns correctly inside the try block
         replacement = (
             indent + "raw_function_calls = []\n"
