@@ -24,17 +24,18 @@ def main():
     with open(target_path, "r") as f:
         content = f.read()
 
-    # Find the target block using flexible whitespace regex to get exact indentation
-    pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*matches\s*\]"
+    # Find the target block using flexible whitespace regex to get exact indentation and variable name
+    pattern = r"^([ \t]*)raw_function_calls\s*=\s*\[\s*json\.loads\(\s*match\[0\]\s*if\s*match\[0\]\s*else\s*match\[1\]\s*\)\s*for\s*match\s*in\s*([a-zA-Z0-9_]+)\s*\]"
     
     match = re.search(pattern, content, re.MULTILINE)
     
     if match:
         indent = match.group(1)
+        matches_var = match.group(2)
         # Construct replacement string by concatenation to avoid backslashes inside f-strings (for python < 3.12 compatibility)
         replacement = (
             "raw_function_calls = []\n"
-            + indent + "for match in matches:\n"
+            + indent + "for match in " + matches_var + ":\n"
             + indent + "    s = match[0] if match[0] else match[1]\n"
             + indent + "    # Robustly extract JSON block using regex\n"
             + indent + "    json_match = re.search(r\"\\{.*\\}\", s, re.DOTALL)\n"
