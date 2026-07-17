@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from collections import Counter
 from copy import deepcopy
@@ -32,6 +33,34 @@ Rules when calling tools:
 5. Never describe or announce a tool call in text - either make the call [A], ask [B], or answer [C]."""
 
 
+# Ledger-and-Receipts protocol. Pairs with WTB_HISTORY_MODE=ledger, which
+# replaces the raw prior-turn transcript with a compact verified Ledger (one
+# row per closed turn: task -> action -> result -> how it closed). The model
+# is asked to treat "did I already do this" as a lookup against that Ledger
+# rather than a re-read of a growing transcript, and to only ever use
+# argument values that carry a receipt. Benchmark-agnostic for the same
+# reason as the triage prompt above: it encodes a general discipline, not
+# rules fitted to specific test cases.
+RECEIPTS_SYSTEM_PROMPT_TEMPLATE = """Current Date: {env_info}
+
+You are a precise tool-calling assistant. Above the current user message you will find a Ledger: one row per earlier turn in this session, showing the task, the action taken, its result, and how it was closed. Treat the Ledger as verified fact - do not re-derive anything it already states, and do not repeat a call whose result the Ledger already has.
+
+On every turn, first classify it into exactly one mode:
+
+[A] CALL TOOLS - the request needs a lookup/action the tools perform, and every required parameter has a receipt (see below). Respond with the tool call(s) only.
+
+[B] ASK THE USER - a tool is needed but some required parameter has no receipt. Ask exactly for the missing detail. Never guess, fabricate, or silently default it.
+
+[C] ANSWER DIRECTLY - the Ledger (or this message) already contains the full answer, or the request is small talk / general knowledge. Reply in plain text, drawing only on Ledger rows and this message. Do not re-call a tool the Ledger already answered.
+
+Receipts - every argument value must come from one of three sources, or it does not get written:
+1. QUOTE - copied verbatim from the user's message or a Ledger row.
+2. COMPUTE - deterministically derived from Current Date (e.g. "this weekend" -> the next Sat/Sun).
+3. RESOLVE - the referent of a pronoun/description ("that one", "the first show") traced to the specific Ledger row it points to.
+
+Never include an optional parameter you cannot trace to one of these three sources - no default true/false/0/empty values, no guessed formats or limits. Required parameters always get a receipt or you use mode [B]. Follow the schema exactly: names, types, and enum values must match it. Emit independent tool calls together; only defer a call that needs another call's result first. Never describe or announce a call in text - either call [A], ask [B], or answer [C]."""
+
+
 class BaseHandler:
     def __init__(self, model_name, temperature):
         self.model_name = model_name
@@ -51,6 +80,18 @@ class BaseHandler:
         # re-injected next to the current turn (non-prescriptive; counters
         # attention dilution over long histories). WTB_LEDGER=0 disables.
         self.ledger_enabled = os.getenv("WTB_LEDGER", "1").strip().lower() not in ("0", "false", "")
+        # History representation for prior turns:
+        #   "native"  - replay the full prior-turn chat transcript (default,
+        #               original benchmark behavior)
+        #   "ledger"  - replace it with the deterministic Ledger (one verified
+        #               row per closed turn; see _build_deterministic_ledger)
+        self.history_mode = os.getenv("WTB_HISTORY_MODE", "native").strip().lower()
+        # Receipts: mechanically verify every tool-call argument is grounded
+        # in the conversation (quoted, computed from Current Date, or resolved
+        # from a referent) before it is allowed to reach the eval graph.
+        # Ungrounded optional arguments are dropped; ungrounded required
+        # arguments are kept (schema always wins) but logged for review.
+        self.receipts_enabled = os.getenv("WTB_RECEIPTS", "0").strip().lower() not in ("0", "false", "")
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
@@ -115,6 +156,93 @@ class BaseHandler:
         for k, v in arguments_dict.items():
             if k in properties:
                 cleaned_args[k] = cast_value(v, properties[k])
+        return cleaned_args
+
+    # A resolved date/time value is a legitimate COMPUTE receipt even though
+    # its digits don't appear verbatim anywhere upstream - it was derived
+    # from Current Date, not copied.
+    _DATE_RECEIPT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
+
+    def _is_grounded(self, value, context_text):
+        '''
+        A value is grounded if it is traceable to something already visible
+        to the model: quoted verbatim from the conversation/Ledger (QUOTE /
+        RESOLVE), or shaped like a resolved date/time (COMPUTE). Container
+        values are grounded only if every leaf value inside them is.
+        '''
+        if isinstance(value, bool) or value is None:
+            return True
+        if isinstance(value, (int, float)):
+            return str(value) in context_text
+        if isinstance(value, str):
+            if not value.strip():
+                return True
+            if self._DATE_RECEIPT_RE.match(value.strip()):
+                return True
+            return value in context_text
+        if isinstance(value, (list, dict)):
+            leaves = []
+
+            def collect(v):
+                if isinstance(v, dict):
+                    for vv in v.values():
+                        collect(vv)
+                elif isinstance(v, list):
+                    for vv in v:
+                        collect(vv)
+                else:
+                    leaves.append(v)
+
+            collect(value)
+            return all(self._is_grounded(leaf, context_text) for leaf in leaves)
+        return True
+
+    def _verify_and_filter_arguments(self, tool_name, arguments_dict, tools, context_text):
+        '''
+        Receipt gate: an argument survives only if it is required by the
+        schema or grounded in the conversation. Required keys are never
+        removed (the schema always wins) but are flagged if ungrounded, so
+        an ungrounded-required case is visible in the log instead of silently
+        passed through. Every ungrounded optional key is dropped - this is
+        what eliminates hallucinated defaults (format, quality, limit, ...)
+        mechanically instead of relying on the prompt being obeyed.
+        '''
+        required = set()
+        for t in tools:
+            func = t.get("function", {})
+            if func.get("name") == tool_name:
+                required = set(func.get("parameters", {}).get("required", []))
+                break
+
+        kept = {}
+        dropped_keys = []
+        ungrounded_required = []
+        for key, value in arguments_dict.items():
+            grounded = self._is_grounded(value, context_text)
+            if key in required:
+                kept[key] = value
+                if not grounded:
+                    ungrounded_required.append(key)
+            elif grounded:
+                kept[key] = value
+            else:
+                dropped_keys.append(key)
+        return kept, dropped_keys, ungrounded_required
+
+    def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
+        cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
+        if self.receipts_enabled:
+            context_text = json.dumps(messages, ensure_ascii=False)
+            cleaned_args, dropped_keys, ungrounded_required = self._verify_and_filter_arguments(
+                tc_name, cleaned_args, tools, context_text
+            )
+            if dropped_keys or ungrounded_required:
+                inference_log.setdefault("receipt_notes", []).append({
+                    "step": step,
+                    "tool": tc_name,
+                    "dropped_ungrounded_optional": dropped_keys,
+                    "ungrounded_required": ungrounded_required,
+                })
         return cleaned_args
 
     @staticmethod
@@ -519,6 +647,57 @@ class BaseHandler:
 
         return new_messages
 
+    # Deterministic Ledger: each closed prior turn rendered as one worked
+    # example - task, the action(s) actually taken with their arguments, a
+    # clipped result, and how it was closed - instead of replaying the full
+    # native message transcript. Pure code, no LLM call, no hallucination
+    # risk: every field is copied verbatim from the gold answer_list, so
+    # this is only usable where gold history is available (i.e. WTB's own
+    # teacher-forced multi-turn replay). Pairs with WTB_HISTORY_MODE=ledger
+    # and RECEIPTS_SYSTEM_PROMPT_TEMPLATE.
+    LEDGER_ROW_OBSERVATION_CHAR_LIMIT = 220
+
+    def _summarize_observation(self, observation):
+        if isinstance(observation, str):
+            text = observation
+        else:
+            try:
+                text = json.dumps(observation, ensure_ascii=False)
+            except Exception:
+                text = str(observation)
+        if len(text) > self.LEDGER_ROW_OBSERVATION_CHAR_LIMIT:
+            text = text[: self.LEDGER_ROW_OBSERVATION_CHAR_LIMIT] + "..."
+        return text
+
+    def _build_deterministic_ledger(self, history_tasks, history_answer_lists):
+        if not history_tasks:
+            return None
+        rows = []
+        for turn_idx, (task, answer_list) in enumerate(zip(history_tasks, history_answer_lists), start=1):
+            tool_call_graph = ToolCallGraph(answer_list)
+            tool_call_graph.add_node_list()
+            tool_call_graph.generate_all_path()
+            optimal_path = tool_call_graph.optimal_path_list[0]
+
+            lines = [f"[T{turn_idx}] user: {task}"]
+            for idx_action_list in optimal_path:
+                for idx in idx_action_list:
+                    answer = answer_list[idx]
+                    action = answer["action"]
+                    name = action["name"]
+                    observation = answer["observation"]
+                    if name == "ask_user_for_required_parameters":
+                        lines.append(f"     asked: {observation}")
+                        lines.append(f"     user replied: {answer.get('user_input', '')}")
+                    elif name == "prepare_to_answer":
+                        lines.append(f"     answered: {observation}")
+                    else:
+                        args_str = json.dumps(action["arguments"], ensure_ascii=False)
+                        lines.append(f"     -> {name}({args_str})")
+                        lines.append(f"        => {self._summarize_observation(observation)}")
+            rows.append("\n".join(lines))
+        return "\n\n".join(rows)
+
     # Session Ledger: "double-entry bookkeeping x dialogue state". A bookkeeper
     # never re-reads all correspondence - every essential value is one terse
     # ledger line. Injected at the recency position (right before the current
@@ -580,16 +759,32 @@ class BaseHandler:
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
         if self.sys_mode == "minimal":
             system_content = f"Current Date: {env_info}"
+        elif self.sys_mode == "receipts":
+            system_content = RECEIPTS_SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)
         else:
             system_content = SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)
         messages = [{"role": "system", "content": system_content}]
-        for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
-            history_messages = self._add_action_observation(history_task, history_answer_list, consecutive_tool_messages)
-            messages.extend(history_messages)
+
+        if self.history_mode == "ledger":
+            ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
+            if ledger:
+                messages.append({
+                    "role": "system",
+                    "content": "Ledger - verified record of this session's prior turns "
+                               "(task -> action taken -> result -> how it closed):\n\n" + ledger,
+                })
+        else:
+            for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
+                history_messages = self._add_action_observation(history_task, history_answer_list, consecutive_tool_messages)
+                messages.extend(history_messages)
+
         messages.append({"role": "user", "content": current_task})
         messages = self._convert_to_tool_calls(messages)
 
-        if self.ledger_enabled and history_tasks:
+        # The LLM-generated Session Ledger digests the native transcript; it is
+        # redundant once the deterministic Ledger has already replaced that
+        # transcript, so it only runs in native history mode.
+        if self.ledger_enabled and history_tasks and self.history_mode != "ledger":
             ledger = self._build_session_ledger(messages[:-1], env_info)
             if ledger:
                 messages.insert(
@@ -688,7 +883,7 @@ class BaseHandler:
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             if tool_calls is not None:
-                # Rule-Based Schema Cleaner
+                # Rule-Based Schema Cleaner (+ Receipt gate when WTB_RECEIPTS=1)
                 cleaned_tool_calls = []
                 for tc in tool_calls:
                     try:
@@ -696,10 +891,10 @@ class BaseHandler:
                         tc_args_str = tc["function"]["arguments"]
                         if isinstance(tc_args_str, str):
                             tc_args = json.loads(tc_args_str)
-                            cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
+                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args, tools, messages, step, inference_log)
                             tc["function"]["arguments"] = json.dumps(cleaned_args, ensure_ascii=False)
                         elif isinstance(tc_args_str, dict):
-                            cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args_str, tools)
+                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args_str, tools, messages, step, inference_log)
                             tc["function"]["arguments"] = cleaned_args
                     except Exception as e:
                         print(f"Cleaner error: {e}", flush=True)
