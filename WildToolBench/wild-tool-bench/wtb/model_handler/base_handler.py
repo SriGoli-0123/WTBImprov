@@ -58,7 +58,26 @@ Receipts - every argument value must come from one of three sources, or it does 
 2. COMPUTE - deterministically derived from Current Date (e.g. "this weekend" -> the next Sat/Sun).
 3. RESOLVE - the referent of a pronoun/description ("that one", "the first show") traced to the specific Ledger row it points to.
 
-Never include an optional parameter you cannot trace to one of these three sources - no default true/false/0/empty values, no guessed formats or limits. Required parameters always get a receipt or you use mode [B]. Follow the schema exactly: names, types, and enum values must match it. Emit independent tool calls together; only defer a call that needs another call's result first. Never describe or announce a call in text - either call [A], ask [B], or answer [C]."""
+Never include an optional parameter you cannot trace to one of these three sources - no default true/false/0/empty values, no guessed formats or limits. Required parameters always get a receipt or you use mode [B]. Follow the schema exactly: names, types, and enum values must match it. Emit independent tool calls together; only defer a call that needs another call's result first. Never describe or announce a call in text - either call [A], ask [B], or answer [C].
+
+Worked example (different domain, same discipline):
+
+Ledger so far:
+[T1] user: Track my parcel AX-4471.
+     -> trackParcel({{"tracking_id": "AX-4471"}})
+        => {{"status": "In transit", "hub": "Delta Hub 3", "eta": "2025-03-14"}}
+     answered: AX-4471 is in transit via Delta Hub 3, ETA March 14.
+
+Turn 2, user: "Schedule a pickup for my return box too."
+-> schedulePickup requires a date and an address; neither was ever stated -> no receipt -> [B]: "Sure - what date, and from which address?"
+
+Turn 3, user: "March 15 from 12 Elm Court, and also track parcel BX-9902."
+-> every value receipted (QUOTE / COMPUTE), the two tasks are independent -> [A], one response, two calls together:
+   schedulePickup({{"date": "2025-03-15", "address": "12 Elm Court"}}) ; trackParcel({{"tracking_id": "BX-9902"}})
+   (no invented optionals - no "notes", no "priority", no format flags)
+
+Turn 4, user: "Which hub was AX-4471 at again?"
+-> the Ledger already holds it -> [C]: answer "Delta Hub 3" directly, no re-call."""
 
 
 class BaseHandler:
@@ -92,6 +111,22 @@ class BaseHandler:
         # Ungrounded optional arguments are dropped; ungrounded required
         # arguments are kept (schema always wins) but logged for review.
         self.receipts_enabled = os.getenv("WTB_RECEIPTS", "0").strip().lower() not in ("0", "false", "")
+        # Candidate selection within the winning tool-calling cluster:
+        #   "vote"    - argument-level majority merge (original behavior)
+        #   "checker" - pick the candidate with the fewest mechanical
+        #               violations (schema, grounding, duplicate re-calls).
+        #               Voting needs a majority of clean samples; this needs
+        #               only ONE clean sample among N.
+        self.select_mode = os.getenv("WTB_SELECT", "vote").strip().lower()
+        # Violation-guided repair: if the chosen response still audits dirty,
+        # show the model its own draft plus the audit findings and let it
+        # re-decide once - informed re-decision instead of silent post-hoc
+        # surgery on a call the model never intended.
+        self.repair_enabled = os.getenv("WTB_REPAIR", "0").strip().lower() not in ("0", "false", "")
+        # Ledger observation clipping (chars); 0 keeps observations whole.
+        # Clipping was measured to hurt Chat/coreference turns (facts needed
+        # later were cut out of the row), so whole is the default.
+        self.ledger_obs_chars = int(os.getenv("WTB_LEDGER_OBS_CHARS", "0"))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
@@ -405,13 +440,13 @@ class BaseHandler:
         anchor["latency"] = latency
 
         if self.sc_n <= 1 or not hasattr(self, "_request_candidates"):
-            return anchor
+            return self._maybe_repair(anchor, inference_data)
 
         try:
             extra = self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
         except Exception as e:
             print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
-            return anchor
+            return self._maybe_repair(anchor, inference_data)
 
         # Normalize copies for voting (recover parser-dropped tool calls / abstain
         # on unrecoverable ones) while keeping the faithful anchor for fallback.
@@ -444,14 +479,21 @@ class BaseHandler:
 
             chosen = dict(cluster[0])
             if winning_signature[0] == "tools":
-                chosen["tool_calls"] = self._merge_tool_calls(cluster, inference_data["tools"])
+                if self.select_mode == "checker":
+                    scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
+                    best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
+                    chosen = dict(cluster[best_idx])
+                    consensus_log["checker_violation_scores"] = scores
+                    consensus_log["checker_pick"] = best_idx
+                else:
+                    chosen["tool_calls"] = self._merge_tool_calls(cluster, inference_data["tools"])
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
         chosen["output_token"] = total_output
         chosen["latency"] = total_latency
         chosen["consensus_log"] = consensus_log
-        return chosen
+        return self._maybe_repair(chosen, inference_data)
 
     def _merge_tool_calls(self, cluster, tools):
         '''
@@ -522,6 +564,118 @@ class BaseHandler:
             merged.append(new_tc)
 
         return merged
+
+    def _candidate_violations(self, candidate, inference_data):
+        '''
+        Mechanical audit of one candidate response. Counts defects the eval
+        punishes deterministically: unparseable or unknown calls, schema
+        breaches, ungrounded optional arguments, and exact re-calls of a
+        call already answered this session. Text-only candidates audit as
+        zero, so this only ranks candidates *within* the tool-calling
+        cluster (mode itself stays a plurality vote) - the audit can never
+        flip a call decision into an answer by itself.
+        '''
+        from wtb.checker_utils import ToolArgsChecker
+        tools = inference_data["tools"]
+        messages = inference_data["messages"]
+        checker = ToolArgsChecker()
+        context_text = json.dumps(messages, ensure_ascii=False)
+        history_calls = set()
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {})
+                    args_h = fn.get("arguments")
+                    if isinstance(args_h, str):
+                        try:
+                            args_h = json.loads(args_h)
+                        except Exception:
+                            pass
+                    history_calls.add((fn.get("name"), self._canon(args_h)))
+
+        total = 0
+        detail = []
+        for tc in candidate.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args = fn.get("arguments")
+            args_str = args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False)
+            try:
+                parsed = json.loads(args_str)
+            except Exception:
+                total += 3
+                detail.append(f"{name}: arguments are not valid JSON")
+                continue
+            try:
+                schema_status = checker.tool_check(tools, name, args_str)
+            except Exception:
+                total += 3
+                detail.append(f"{name}: not one of the available tools")
+                continue
+            if schema_status != checker.CORRECT:
+                total += 2
+                detail.append(f"{name}: {schema_status}")
+            required = set()
+            for t in tools:
+                func = t.get("function", {})
+                if func.get("name") == name:
+                    required = set(func.get("parameters", {}).get("required", []))
+                    break
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    if key not in required and not self._is_grounded(value, context_text):
+                        total += 1
+                        detail.append(f"{name}.{key}: optional argument with no basis in the conversation")
+            if (name, self._canon(parsed)) in history_calls:
+                total += 2
+                detail.append(f"{name}: exact repeat of a call already answered earlier")
+        return {"total": total, "detail": detail}
+
+    def _maybe_repair(self, chosen, inference_data):
+        '''
+        Violation-guided single repair. Instead of silently editing a flawed
+        call (which yields calls the model never intended), show the model
+        its own draft plus the audit findings and let it re-decide once.
+        The redo is adopted only if it audits strictly cleaner.
+        '''
+        if not self.repair_enabled or not chosen.get("tool_calls"):
+            return chosen
+        audit = self._candidate_violations(chosen, inference_data)
+        if audit["total"] == 0:
+            return chosen
+        draft = json.dumps([tc.get("function") for tc in chosen["tool_calls"]], ensure_ascii=False)
+        note = (
+            "AUDIT: your drafted tool call(s) " + draft + " have these problems:\n- "
+            + "\n- ".join(audit["detail"])
+            + "\nEmit the corrected tool call(s) now: fix or remove only the flagged parts and add nothing new. "
+              "If a required parameter's value is genuinely missing from the conversation, ask the user for it instead."
+        )
+        repair_data = dict(inference_data)
+        repair_data["messages"] = list(inference_data["messages"]) + [{"role": "user", "content": note}]
+        try:
+            api_response, latency = self._request_tool_call(repair_data)
+            redo = self._parse_api_response(api_response)
+        except Exception as e:
+            print(f"Repair request failed, keeping draft: {e}", flush=True)
+            return chosen
+        redo = self._normalize_response(dict(redo))
+        if redo.get("tool_calls"):
+            redo_audit = self._candidate_violations(redo, inference_data)
+        else:
+            redo_audit = {"total": 0, "detail": []}
+        adopted = redo_audit["total"] < audit["total"] and (redo.get("tool_calls") or redo.get("content"))
+        result = dict(redo) if adopted else dict(chosen)
+        result["input_token"] = (chosen.get("input_token") or 0) + (redo.get("input_token") or 0)
+        result["output_token"] = (chosen.get("output_token") or 0) + (redo.get("output_token") or 0)
+        result["latency"] = (chosen.get("latency") or 0) + (latency or 0)
+        consensus_log = dict(chosen.get("consensus_log") or {})
+        consensus_log["repair"] = {
+            "adopted": bool(adopted),
+            "draft_violations": audit["detail"],
+            "redo_violations": redo_audit["detail"],
+        }
+        result["consensus_log"] = consensus_log
+        return result
 
     def _request_tool_call(self, inference_data):
         raise NotImplementedError
@@ -648,15 +802,13 @@ class BaseHandler:
         return new_messages
 
     # Deterministic Ledger: each closed prior turn rendered as one worked
-    # example - task, the action(s) actually taken with their arguments, a
-    # clipped result, and how it was closed - instead of replaying the full
-    # native message transcript. Pure code, no LLM call, no hallucination
-    # risk: every field is copied verbatim from the gold answer_list, so
-    # this is only usable where gold history is available (i.e. WTB's own
+    # example - task, the action(s) actually taken with their arguments, the
+    # result, and how it was closed - instead of replaying the full native
+    # message transcript. Pure code, no LLM call, no hallucination risk:
+    # every field is copied verbatim from the gold answer_list, so this is
+    # only usable where gold history is available (i.e. WTB's own
     # teacher-forced multi-turn replay). Pairs with WTB_HISTORY_MODE=ledger
     # and RECEIPTS_SYSTEM_PROMPT_TEMPLATE.
-    LEDGER_ROW_OBSERVATION_CHAR_LIMIT = 220
-
     def _summarize_observation(self, observation):
         if isinstance(observation, str):
             text = observation
@@ -665,8 +817,8 @@ class BaseHandler:
                 text = json.dumps(observation, ensure_ascii=False)
             except Exception:
                 text = str(observation)
-        if len(text) > self.LEDGER_ROW_OBSERVATION_CHAR_LIMIT:
-            text = text[: self.LEDGER_ROW_OBSERVATION_CHAR_LIMIT] + "..."
+        if self.ledger_obs_chars > 0 and len(text) > self.ledger_obs_chars:
+            text = text[: self.ledger_obs_chars] + "..."
         return text
 
     def _build_deterministic_ledger(self, history_tasks, history_answer_lists):
