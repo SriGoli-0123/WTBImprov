@@ -138,6 +138,88 @@ class BaseHandler:
     # its digits don't appear verbatim anywhere upstream - it was derived
     # from Current Date, not copied.
     _DATE_RECEIPT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
+    _ENV_DATE_RE = re.compile(r"Current Date: (\d{4})-(\d{2})-(\d{2})")
+    _MONTH_DAY_RE = re.compile(
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(\d{1,2})(?:st|nd|rd|th)?", re.IGNORECASE)
+    _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+    def _extract_date_candidates(self, context_text):
+        '''
+        Math Registry: re-derive in code the calendar dates the conversation
+        can legitimately mean - relative phrases resolved against Current
+        Date, plus explicitly written month-name dates. Returns a set of ISO
+        dates, empty when nothing resolvable is present (callers must then
+        fall back to permissive acceptance, never reject on an empty set).
+        '''
+        import datetime
+        m = self._ENV_DATE_RE.search(context_text)
+        if not m:
+            return set()
+        try:
+            base = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return set()
+        low = context_text.lower()
+        out = set()
+
+        def add(d):
+            out.add(d.isoformat())
+
+        def add_range(start, end):
+            d = start
+            while d <= end:
+                add(d)
+                d += datetime.timedelta(days=1)
+
+        if "today" in low or "tonight" in low:
+            add(base)
+        if "day after tomorrow" in low:
+            add(base + datetime.timedelta(days=2))
+        if "tomorrow" in low:
+            add(base + datetime.timedelta(days=1))
+        if "yesterday" in low:
+            add(base - datetime.timedelta(days=1))
+        saturday = base + datetime.timedelta(days=(5 - base.weekday()) % 7)
+        if "weekend" in low:
+            add(saturday)
+            add(saturday + datetime.timedelta(days=1))
+            if "next weekend" in low:
+                add(saturday + datetime.timedelta(days=7))
+                add(saturday + datetime.timedelta(days=8))
+        next_monday = base + datetime.timedelta(days=7 - base.weekday())
+        if "this week" in low:
+            add_range(base, next_monday - datetime.timedelta(days=1))
+        if "next week" in low:
+            add_range(next_monday, next_monday + datetime.timedelta(days=6))
+        for wd_idx, wd in enumerate(self._WEEKDAYS):
+            if wd in low:
+                add(base + datetime.timedelta(days=(wd_idx - base.weekday()) % 7))
+                if "next " + wd in low:
+                    add(base + datetime.timedelta(days=((wd_idx - base.weekday()) % 7) + 7))
+        for month_name, day in self._MONTH_DAY_RE.findall(context_text):
+            month = ["january", "february", "march", "april", "may", "june", "july",
+                     "august", "september", "october", "november", "december"].index(month_name.lower()) + 1
+            for year in (base.year, base.year + 1, base.year - 1):
+                try:
+                    add(datetime.date(year, month, int(day)))
+                except ValueError:
+                    pass
+        return out
+
+    def _date_value_ok(self, value, context_text):
+        '''
+        Verify a date-shaped value: pass if quoted from the conversation,
+        else if it matches a code-computed candidate, else pass permissively
+        only when nothing was resolvable (unknown phrasing must never be
+        punished).
+        '''
+        if value in context_text or _normalize_str(value) in _normalize_str(context_text):
+            return True
+        candidates = self._extract_date_candidates(context_text)
+        if not candidates:
+            return True
+        return value.strip()[:10] in candidates
 
     def _is_grounded(self, value, context_text):
         '''
@@ -156,6 +238,10 @@ class BaseHandler:
             if not value.strip():
                 return True
             if self._DATE_RECEIPT_RE.match(value.strip()):
+                # Permissive on purpose: stripping is irreversible, and the
+                # phrase parser cannot cover every date expression. Candidate
+                # verification lives in _candidate_violations, which strips
+                # nothing and only steers selection and repair.
                 return True
             if value in context_text:
                 return True
@@ -502,6 +588,13 @@ class BaseHandler:
                     if key not in required and not self._is_grounded(value, context_text):
                         total += 1
                         detail.append(f"{name}.{key}: optional argument with no basis in the conversation")
+                    elif (isinstance(value, str) and self._DATE_RECEIPT_RE.match(value.strip())
+                          and not self._date_value_ok(value, context_text)):
+                        # Required args are never stripped, but a date that
+                        # matches no computed candidate is a high-precision
+                        # signal for selection and repair.
+                        total += 2
+                        detail.append(f"{name}.{key}: date does not match any date derivable from the conversation")
             if (name, self._canon(parsed)) in history_calls:
                 total += 2
                 detail.append(f"{name}: exact repeat of a call already answered earlier")
