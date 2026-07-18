@@ -12,38 +12,14 @@ from wtb.utils import sort_key, load_file, generate_random_string
 from wtb.constant import PROMPT_PATH
 
 
-# Action-mode triage protocol. Benchmark-agnostic: it encodes general tool-use
-# discipline (decide call/ask/answer first, argument minimalism, verbatim value
-# copying) rather than rules fitted to specific test cases.
+# Ledger-and-Receipts protocol. Prior turns are replayed as a compact
+# verified Ledger (one row per closed turn: task -> action -> result -> how
+# it closed) instead of a raw transcript, and every argument value must
+# carry a receipt. Benchmark-agnostic: it encodes a general tool-use
+# discipline, not rules fitted to specific test cases.
 SYSTEM_PROMPT_TEMPLATE = """Current Date: {env_info}
 
-You are a precise tool-calling assistant. On every user turn, first silently classify the turn into exactly one of three modes, then respond in that mode:
-
-[A] CALL TOOLS - The request requires an action or lookup that the available tools perform, and the value of every required parameter is available: stated by the user (in this turn or an earlier one), present in an earlier tool result, or exactly computable (e.g., resolve "tomorrow" or "this weekend" using Current Date). Respond with the tool call(s) only.
-
-[B] ASK THE USER - A tool is needed, but some required parameter value is missing or ambiguous (e.g., the user says "one of them" without saying which one, or an ID/date/location was never given). Reply with one short plain-text question requesting exactly the missing detail(s). Never guess, never fabricate or use placeholder values, and never silently pick one of several options for the user.
-
-[C] ANSWER DIRECTLY - The request can be fully answered from the conversation so far (including earlier tool results), or it is small talk / general knowledge that no tool serves. Reply in plain text. Do not re-call a tool whose result is already in the conversation.
-
-Rules when calling tools:
-1. Emit ALL independent tool calls of this turn together in one response (parallel calls). Only defer a call when it needs the output of another call first; then wait for that result before making it.
-2. Copy argument values exactly from the conversation or tool results (IDs, codes, emails, names, URLs - verbatim). Resolve relative dates/times against Current Date.
-3. Include a parameter only if it is required by the schema or the user explicitly provided/requested its value. Do not add optional parameters on your own initiative (no default true/false/0/empty values). For update-style operations, pass only the identifier(s) plus the fields the user wants changed.
-4. Follow the schema exactly: parameter names, types, and enum values must match it.
-5. Never describe or announce a tool call in text - either make the call [A], ask [B], or answer [C]."""
-
-
-# Ledger-and-Receipts protocol. Pairs with WTB_HISTORY_MODE=ledger, which
-# replaces the raw prior-turn transcript with a compact verified Ledger (one
-# row per closed turn: task -> action -> result -> how it closed). The model
-# is asked to treat "did I already do this" as a lookup against that Ledger
-# rather than a re-read of a growing transcript, and to only ever use
-# argument values that carry a receipt. Benchmark-agnostic for the same
-# reason as the triage prompt above: it encodes a general discipline, not
-# rules fitted to specific test cases.
-RECEIPTS_SYSTEM_PROMPT_TEMPLATE = """Current Date: {env_info}
-
-You are a precise tool-calling assistant. Above the current user message you will find a Ledger: one row per earlier turn in this session, showing the task, the action taken, its result, and how it was closed. Treat the Ledger as verified fact - do not re-derive anything it already states, and do not repeat a call whose result the Ledger already has.
+You are a precise tool-calling assistant. If this session has earlier turns, a Ledger appears above the current user message: one row per turn, showing the task, the action taken, its result, and how it was closed. Treat the Ledger as verified fact - do not re-derive anything it already states, and do not repeat a call whose result the Ledger already has.
 
 On every turn, first classify it into exactly one mode:
 
@@ -86,47 +62,11 @@ class BaseHandler:
         self.temperature = temperature
         self.model_messages = []
         self.consecutive_tool_messages = True
-        # Self-consistency (consensus decoding) config:
-        #   WTB_SC_N: total candidates sampled per step (1 disables voting)
-        #   WTB_SC_TEMP: temperature for the diversity samples (anchor keeps run temperature)
-        self.sc_n = int(os.getenv("WTB_SC_N", "5"))
-        self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
-        # System prompt mode:
-        #   "triage"  - behavioral action-mode protocol (default)
-        #   "minimal" - bare "Current Date: ..." exactly like the original benchmark
-        self.sys_mode = os.getenv("WTB_SYS_MODE", "triage").strip().lower()
-        # Session Ledger: terse bookkeeping-style digest of the dialogue history,
-        # re-injected next to the current turn (non-prescriptive; counters
-        # attention dilution over long histories). WTB_LEDGER=0 disables.
-        self.ledger_enabled = os.getenv("WTB_LEDGER", "1").strip().lower() not in ("0", "false", "")
-        # History representation for prior turns:
-        #   "native"  - replay the full prior-turn chat transcript (default,
-        #               original benchmark behavior)
-        #   "ledger"  - replace it with the deterministic Ledger (one verified
-        #               row per closed turn; see _build_deterministic_ledger)
-        self.history_mode = os.getenv("WTB_HISTORY_MODE", "native").strip().lower()
-        # Receipts: mechanically verify every tool-call argument is grounded
-        # in the conversation (quoted, computed from Current Date, or resolved
-        # from a referent) before it is allowed to reach the eval graph.
-        # Ungrounded optional arguments are dropped; ungrounded required
-        # arguments are kept (schema always wins) but logged for review.
-        self.receipts_enabled = os.getenv("WTB_RECEIPTS", "0").strip().lower() not in ("0", "false", "")
-        # Candidate selection within the winning tool-calling cluster:
-        #   "vote"    - argument-level majority merge (original behavior)
-        #   "checker" - pick the candidate with the fewest mechanical
-        #               violations (schema, grounding, duplicate re-calls).
-        #               Voting needs a majority of clean samples; this needs
-        #               only ONE clean sample among N.
-        self.select_mode = os.getenv("WTB_SELECT", "vote").strip().lower()
-        # Violation-guided repair: if the chosen response still audits dirty,
-        # show the model its own draft plus the audit findings and let it
-        # re-decide once - informed re-decision instead of silent post-hoc
-        # surgery on a call the model never intended.
-        self.repair_enabled = os.getenv("WTB_REPAIR", "0").strip().lower() not in ("0", "false", "")
-        # Ledger observation clipping (chars); 0 keeps observations whole.
-        # Clipping was measured to hurt Chat/coreference turns (facts needed
-        # later were cut out of the row), so whole is the default.
-        self.ledger_obs_chars = int(os.getenv("WTB_LEDGER_OBS_CHARS", "0"))
+        # Self-consistency sampling: 1 anchor at the run temperature plus
+        # (sc_n - 1) diversity samples. The checker-ranked audit picks the
+        # cleanest candidate, so one good sample among N is enough.
+        self.sc_n = 5
+        self.sc_temperature = 0.8
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
@@ -266,18 +206,17 @@ class BaseHandler:
 
     def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
         cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
-        if self.receipts_enabled:
-            context_text = json.dumps(messages, ensure_ascii=False)
-            cleaned_args, dropped_keys, ungrounded_required = self._verify_and_filter_arguments(
-                tc_name, cleaned_args, tools, context_text
-            )
-            if dropped_keys or ungrounded_required:
-                inference_log.setdefault("receipt_notes", []).append({
-                    "step": step,
-                    "tool": tc_name,
-                    "dropped_ungrounded_optional": dropped_keys,
-                    "ungrounded_required": ungrounded_required,
-                })
+        context_text = json.dumps(messages, ensure_ascii=False)
+        cleaned_args, dropped_keys, ungrounded_required = self._verify_and_filter_arguments(
+            tc_name, cleaned_args, tools, context_text
+        )
+        if dropped_keys or ungrounded_required:
+            inference_log.setdefault("receipt_notes", []).append({
+                "step": step,
+                "tool": tc_name,
+                "dropped_ungrounded_optional": dropped_keys,
+                "ungrounded_required": ungrounded_required,
+            })
         return cleaned_args
 
     @staticmethod
@@ -479,14 +418,11 @@ class BaseHandler:
 
             chosen = dict(cluster[0])
             if winning_signature[0] == "tools":
-                if self.select_mode == "checker":
-                    scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
-                    best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
-                    chosen = dict(cluster[best_idx])
-                    consensus_log["checker_violation_scores"] = scores
-                    consensus_log["checker_pick"] = best_idx
-                else:
-                    chosen["tool_calls"] = self._merge_tool_calls(cluster, inference_data["tools"])
+                scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
+                best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
+                chosen = dict(cluster[best_idx])
+                consensus_log["checker_violation_scores"] = scores
+                consensus_log["checker_pick"] = best_idx
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
@@ -494,76 +430,6 @@ class BaseHandler:
         chosen["latency"] = total_latency
         chosen["consensus_log"] = consensus_log
         return self._maybe_repair(chosen, inference_data)
-
-    def _merge_tool_calls(self, cluster, tools):
-        '''
-        Argument-level majority vote across a cluster of candidates that agree on
-        the tool-name multiset. A parameter key is kept only if a strict majority
-        of candidates include it (or the schema marks it required), which prunes
-        hallucinated optional parameters; each kept key takes its majority value.
-        '''
-        required_by_tool = {}
-        for t in tools:
-            func = t.get("function", {})
-            required_by_tool[func.get("name")] = set(func.get("parameters", {}).get("required", []))
-
-        def parsed_calls(candidate):
-            calls = []
-            for tc in candidate.get("tool_calls") or []:
-                function = tc.get("function", {})
-                name = function.get("name", "")
-                arguments = function.get("arguments")
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except Exception:
-                        arguments = None
-                if not isinstance(arguments, dict):
-                    arguments = None
-                calls.append((name, arguments, tc))
-            # Sort by (name, canonical args) so same-name calls align consistently
-            # across candidates.
-            calls.sort(key=lambda x: (x[0], self._canon(x[1]) if x[1] is not None else ""))
-            return calls
-
-        all_calls = [parsed_calls(c) for c in cluster]
-        representative_calls = all_calls[0]
-
-        merged = []
-        for position, (name, rep_args, rep_tc) in enumerate(representative_calls):
-            variants = []
-            for candidate_calls in all_calls:
-                v_name, v_args, _ = candidate_calls[position]
-                if v_name == name and v_args is not None:
-                    variants.append(v_args)
-
-            if rep_args is None or not variants:
-                merged.append(rep_tc)
-                continue
-
-            n_variants = len(variants)
-            required_params = required_by_tool.get(name, set())
-            key_counts = Counter(k for v in variants for k in v)
-
-            final_args = {}
-            for key, count in key_counts.items():
-                # Strict majority keeps the key; ties are dropped (minimalism bias
-                # against hallucinated optional parameters). Required parameters
-                # are always kept so the vote can never break schema validity.
-                if count * 2 <= n_variants and key not in required_params:
-                    continue
-                value_counts = Counter(self._canon(v[key]) for v in variants if key in v)
-                best = max(value_counts.values())
-                top_values = [val for val, c in value_counts.items() if c == best]
-                rep_value = self._canon(rep_args[key]) if key in rep_args else None
-                chosen_value = rep_value if rep_value in top_values else top_values[0]
-                final_args[key] = json.loads(chosen_value)
-
-            new_tc = deepcopy(rep_tc)
-            new_tc["function"]["arguments"] = json.dumps(final_args, ensure_ascii=False)
-            merged.append(new_tc)
-
-        return merged
 
     def _candidate_violations(self, candidate, inference_data):
         '''
@@ -638,7 +504,7 @@ class BaseHandler:
         its own draft plus the audit findings and let it re-decide once.
         The redo is adopted only if it audits strictly cleaner.
         '''
-        if not self.repair_enabled or not chosen.get("tool_calls"):
+        if not chosen.get("tool_calls"):
             return chosen
         audit = self._candidate_violations(chosen, inference_data)
         if audit["total"] == 0:
@@ -695,131 +561,23 @@ class BaseHandler:
             tools = new_tools
         return tools
 
-    def _add_action_observation(self, task, answer_list, consecutive_tool_messages):
-        tool_call_graph = ToolCallGraph(answer_list)
-        tool_call_graph.add_node_list()
-        tool_call_graph.generate_all_path()
-        optimal_path = tool_call_graph.optimal_path_list[0]
-
-        current_messages = [{"role": "user", "content": task}]
-        for idx_action_list in optimal_path:
-            format_action_list = []
-            observation_list = []
-            for idx in idx_action_list:
-                answer = answer_list[idx]
-                action = answer["action"]
-                action_name = action["name"]
-                action_arguments = action["arguments"]
-                observation = answer["observation"]
-                if action_name == "ask_user_for_required_parameters":
-                    assert len(idx_action_list) == 1
-                    user_input = answer["user_input"]
-                    current_messages.extend([
-                        {
-                            "role": "assistant",
-                            "content": observation
-                        },
-                        {
-                            "role": "user",
-                            "content": user_input
-                        }
-                    ])
-
-                elif action_name == "prepare_to_answer":
-                    assert len(idx_action_list) == 1
-                    current_messages.extend([
-                        {
-                            "role": "assistant",
-                            "content": observation
-                        }
-                    ])
-
-                else:
-                    format_action_list.append(
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": action_name,
-                                "arguments": action_arguments
-                            }
-                        }
-                    )
-                    observation_list.append(observation)
-
-            if len(format_action_list) > 0:
-                current_messages.extend([
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": format_action_list
-                    }
-                ])
-                if consecutive_tool_messages:
-                    for observation in observation_list:
-                        current_messages.extend([
-                            {
-                                "role": "tool",
-                                "content": observation
-                            }
-                        ])
-                else:
-                    current_messages.extend([
-                        {
-                            "role": "tool",
-                            "content": json.dumps(observation_list, ensure_ascii=False)
-                        }
-                    ])
-
-        return current_messages
-
-    def _convert_to_tool_calls(self, messages):
-        tool_call_id_list = []
-        new_messages = []
-        for message in messages:
-            role = message["role"]
-            content = message["content"]
-            tool_calls = message.get("tool_calls", None)
-            if role == "assistant":
-                if tool_calls:
-                    new_tool_calls = []
-                    for tool_call in tool_calls:
-                        arguments = tool_call["function"]["arguments"]
-                        if isinstance(arguments, dict):
-                            tool_call["function"]["arguments"] = json.dumps(arguments, ensure_ascii=False)
-                        if "id" not in tool_call:
-                            tool_call_id = "toolu_bdrk_" + generate_random_string(24)
-                            tool_call["id"] = tool_call_id
-                            tool_call_id_list.append(tool_call_id)
-                        new_tool_calls.append(tool_call)
-                    message["tool_calls"] = new_tool_calls
-            elif role == "tool":
-                tool_call_id = tool_call_id_list[0]
-                tool_call_id_list.pop(0)
-                message["tool_call_id"] = tool_call_id
-                message["content"] = json.dumps(content, ensure_ascii=False)
-            new_messages.append(message)
-
-        return new_messages
-
     # Deterministic Ledger: each closed prior turn rendered as one worked
     # example - task, the action(s) actually taken with their arguments, the
     # result, and how it was closed - instead of replaying the full native
     # message transcript. Pure code, no LLM call, no hallucination risk:
     # every field is copied verbatim from the gold answer_list, so this is
     # only usable where gold history is available (i.e. WTB's own
-    # teacher-forced multi-turn replay). Pairs with WTB_HISTORY_MODE=ledger
-    # and RECEIPTS_SYSTEM_PROMPT_TEMPLATE.
-    def _summarize_observation(self, observation):
+    # teacher-forced multi-turn replay). Observations are kept whole:
+    # clipping them was measured to hurt chat/coreference turns, whose
+    # answers live in those result fields.
+    @staticmethod
+    def _render_observation(observation):
         if isinstance(observation, str):
-            text = observation
-        else:
-            try:
-                text = json.dumps(observation, ensure_ascii=False)
-            except Exception:
-                text = str(observation)
-        if self.ledger_obs_chars > 0 and len(text) > self.ledger_obs_chars:
-            text = text[: self.ledger_obs_chars] + "..."
-        return text
+            return observation
+        try:
+            return json.dumps(observation, ensure_ascii=False)
+        except Exception:
+            return str(observation)
 
     def _build_deterministic_ledger(self, history_tasks, history_answer_lists):
         if not history_tasks:
@@ -846,108 +604,20 @@ class BaseHandler:
                     else:
                         args_str = json.dumps(action["arguments"], ensure_ascii=False)
                         lines.append(f"     -> {name}({args_str})")
-                        lines.append(f"        => {self._summarize_observation(observation)}")
+                        lines.append(f"        => {self._render_observation(observation)}")
             rows.append("\n".join(lines))
         return "\n\n".join(rows)
 
-    # Session Ledger: "double-entry bookkeeping x dialogue state". A bookkeeper
-    # never re-reads all correspondence - every essential value is one terse
-    # ledger line. Injected at the recency position (right before the current
-    # turn) so salient facts are not diluted by a long history. Purely
-    # informational: it records what is known, never what to do.
-    LEDGER_PROMPT = (
-        "You are a meticulous bookkeeper for a conversation. Write its ledger: only essential "
-        "facts, one per line, telegraphic style. Record values the user stated (IDs, emails, "
-        "dates, names, locations, amounts), key values tools returned, and requests not yet "
-        "fulfilled. No commentary, no advice, no questions. At most 12 lines. "
-        "If nothing essential, output only: NONE"
-    )
-
-    def _build_session_ledger(self, history_messages, env_info):
-        if not hasattr(self, "generate_with_backoff"):
-            return None
-        lines = []
-        for msg in history_messages:
-            role = msg.get("role")
-            if role == "system":
-                continue
-            if role == "assistant" and msg.get("tool_calls"):
-                calls = []
-                for tc in msg["tool_calls"]:
-                    function = tc.get("function", {})
-                    calls.append(str(function.get("name")) + " " + str(function.get("arguments"))[:200])
-                lines.append("assistant tool_calls: " + "; ".join(calls))
-            else:
-                content = msg.get("content")
-                if content:
-                    content = str(content)
-                    if role == "tool":
-                        content = content[:400]
-                    lines.append(str(role) + ": " + content)
-        if not lines:
-            return None
-        try:
-            api_response, _ = self.generate_with_backoff(
-                messages=[
-                    {"role": "system", "content": self.LEDGER_PROMPT},
-                    {"role": "user", "content": "Current Date: " + str(env_info) + "\n\nDialogue:\n" + "\n".join(lines)},
-                ],
-                model=self.model_name,
-                temperature=0.0,
-            )
-            ledger = api_response.choices[0].message.content
-        except Exception as e:
-            print(f"Session ledger generation failed, continuing without it: {e}", flush=True)
-            return None
-        if not ledger:
-            return None
-        ledger = ledger.strip()
-        if not ledger or ledger.upper().startswith("NONE"):
-            return None
-        # Enforce terseness even if the model rambles.
-        ledger_lines = [l.strip() for l in ledger.splitlines() if l.strip()][:12]
-        return "\n".join(ledger_lines)
-
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
-        if self.sys_mode == "minimal":
-            system_content = f"Current Date: {env_info}"
-        elif self.sys_mode == "receipts":
-            system_content = RECEIPTS_SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)
-        else:
-            system_content = SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)
-        messages = [{"role": "system", "content": system_content}]
-
-        if self.history_mode == "ledger":
-            ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
-            if ledger:
-                messages.append({
-                    "role": "system",
-                    "content": "Ledger - verified record of this session's prior turns "
-                               "(task -> action taken -> result -> how it closed):\n\n" + ledger,
-                })
-        else:
-            for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
-                history_messages = self._add_action_observation(history_task, history_answer_list, consecutive_tool_messages)
-                messages.extend(history_messages)
-
+        messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
+        ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
+        if ledger:
+            messages.append({
+                "role": "system",
+                "content": "Ledger - verified record of this session's prior turns "
+                           "(task -> action taken -> result -> how it closed):\n\n" + ledger,
+            })
         messages.append({"role": "user", "content": current_task})
-        messages = self._convert_to_tool_calls(messages)
-
-        # The LLM-generated Session Ledger digests the native transcript; it is
-        # redundant once the deterministic Ledger has already replaced that
-        # transcript, so it only runs in native history mode.
-        if self.ledger_enabled and history_tasks and self.history_mode != "ledger":
-            ledger = self._build_session_ledger(messages[:-1], env_info)
-            if ledger:
-                messages.insert(
-                    len(messages) - 1,
-                    {
-                        "role": "system",
-                        "content": "Session ledger - essential facts on record so far "
-                                   "(the full dialogue above remains authoritative):\n" + ledger,
-                    },
-                )
-
         return messages
 
     def inference(self, test_entry: dict):
@@ -1035,7 +705,7 @@ class BaseHandler:
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             if tool_calls is not None:
-                # Rule-Based Schema Cleaner (+ Receipt gate when WTB_RECEIPTS=1)
+                # Schema cleaner + receipt gate (ungrounded optionals dropped)
                 cleaned_tool_calls = []
                 for tc in tool_calls:
                     try:
