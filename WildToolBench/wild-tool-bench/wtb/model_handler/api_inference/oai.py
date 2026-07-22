@@ -19,7 +19,13 @@ class OpenAIHandler(BaseHandler):
     @retry_with_backoff(RateLimitError)
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
-        kwargs.setdefault("max_tokens", 2048)
+        # Measured on result_igar_v3 (1767 generations): median 90 tokens,
+        # 99th pct 716, but 5 generations reached the old 2048 cap on long
+        # nested tool calls. Headroom is free - nothing else generates near it.
+        # Note this does NOT address the common truncations in the vLLM log:
+        # those stop around the median, i.e. the model self-terminates
+        # mid-JSON far below any cap. Only constrained decoding fixes those.
+        kwargs.setdefault("max_tokens", int(os.getenv("WTB_MAX_TOKENS", "4096")))
         api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
 
