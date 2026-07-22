@@ -793,23 +793,14 @@ class BaseHandler:
         # entity -> ordered set of descriptive labels, merged across turns so a
         # later, richer observation enriches the same id instead of duplicating it.
         entities = {}
-
-        def is_scalar(v):
-            return isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip()
-
         def walk(obj):
             if isinstance(obj, dict):
-                ids = []
-                labels = []
                 for k, v in obj.items():
-                    key_l = k.lower()
-                    if key_l in ("status_code", "status", "http_status") or not is_scalar(v):
-                        continue
-                    s_v = str(v).strip()
-                    if 3 <= len(s_v) <= 40 and s_v.lower() not in ("200", "ok", "success", "true", "false", "null"):
-                        entities[(k, s_v)] = {}
-                for v in obj.values():
-                    if isinstance(v, (dict, list)):
+                    if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+                        s_v = str(v).strip()
+                        if s_v:
+                            entities[(k, s_v)] = None
+                    elif isinstance(v, (dict, list)):
                         walk(v)
             elif isinstance(obj, list):
                 for item in obj:
@@ -821,13 +812,7 @@ class BaseHandler:
                 if obs:
                     walk(obs)
 
-        cards = []
-        for (k, s_v), labels in entities.items():
-            card = f"{k}: {s_v}"
-            if labels:
-                card += "  (" + ", ".join(list(labels)[:2]) + ")"
-            cards.append(card)
-        return cards
+        return [f"{k}: {s_v}" for (k, s_v) in entities.keys()]
 
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
