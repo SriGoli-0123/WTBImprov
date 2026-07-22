@@ -1017,13 +1017,10 @@ class BaseHandler:
                         tool_calls, tools, json.dumps(messages, ensure_ascii=False)
                     )
                     if unfounded:
-                        # Check if prompt text actually matches tool intent or is a plain chat turn
-                        prompt_lower = current_task.lower()
-                        has_tool_intent = any(
-                            titem.get("tool") and titem["tool"].lower() in prompt_lower
-                            or any(w in prompt_lower for w in ["search", "get", "find", "book", "create", "login", "check", "run", "calculate", "convert", "download", "fetch", "query"])
-                            for titem in unfounded
-                        )
+                        # Pure OpenAPI Schema Validation (Zero Word Lists):
+                        # Verify candidate tool is a valid member of available OpenAPI tools schema
+                        valid_tools = {t.get("function", {}).get("name") for t in tools if t.get("function", {}).get("name")}
+                        has_tool_intent = any(item.get("tool") in valid_tools for item in unfounded)
                         
                         if has_tool_intent:
                             missing_by_tool = {}
