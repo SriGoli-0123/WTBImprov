@@ -238,6 +238,19 @@ class BaseHandler:
             return all(self._is_grounded(leaf, context_text, key_name) for leaf in leaves)
         return True
 
+    def _format_structured_ask(self, tool_name, missing_required_parameters):
+        return {
+            "name": "ask_user_for_required_parameters",
+            "arguments": {
+                "tool_list": [
+                    {
+                        "tool_name": tool_name,
+                        "missing_required_parameters": list(missing_required_parameters)
+                    }
+                ]
+            }
+        }
+
     def _verify_and_filter_arguments(self, tool_name, arguments_dict, tools, context_text):
         '''
         Receipt gate: an argument survives only if it is required by the
@@ -255,6 +268,8 @@ class BaseHandler:
                 required = set(func.get("parameters", {}).get("required", []))
                 break
 
+        _COMMON_DEFAULT_OPTIONALS = {"limit", "offset", "page", "format", "sort", "order", "include_stats", "sync"}
+
         kept = {}
         dropped_keys = []
         ungrounded_required = []
@@ -265,7 +280,10 @@ class BaseHandler:
                 if not grounded:
                     ungrounded_required.append(key)
             elif grounded:
-                kept[key] = value
+                if key.lower() in _COMMON_DEFAULT_OPTIONALS and key.lower() not in context_text.lower():
+                    dropped_keys.append(key)
+                else:
+                    kept[key] = value
             else:
                 dropped_keys.append(key)
         return kept, dropped_keys, ungrounded_required
