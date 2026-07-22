@@ -63,11 +63,10 @@ class BaseHandler:
         self.temperature = temperature
         self.model_messages = []
         self.consecutive_tool_messages = True
-        # Self-consistency sampling: 1 anchor at the run temperature plus
-        # (sc_n - 1) diversity samples. The checker-ranked audit picks the
-        # cleanest candidate, so one good sample among N is enough.
-        self.sc_n = 5
-        self.sc_temperature = 0.8
+        # Single-rollout execution (temp 0.0) by default. The WTB_SC_N env var
+        # can override this if multi-sample ablation is ever requested.
+        self.sc_n = int(os.getenv("WTB_SC_N", "1"))
+        self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         # Find the tool schema
