@@ -13,12 +13,13 @@ class OpenAIHandler(BaseHandler):
         self.client = OpenAI(
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
-            timeout=300.0,
+            timeout=60.0,
         )
 
     @retry_with_backoff(RateLimitError)
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
+        kwargs.setdefault("max_tokens", 1024)
         api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
 
@@ -26,15 +27,14 @@ class OpenAIHandler(BaseHandler):
 
     def _request_tool_call(self, inference_data):
         messages = inference_data["messages"]
-        tools = inference_data.get("tools")
-        kwargs = {
-            "messages": messages,
-            "model": self.model_name,
-            "temperature": self.temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        api_response, latency = self.generate_with_backoff(**kwargs)
+        tools = inference_data["tools"]
+        api_response, latency = self.generate_with_backoff(
+            messages=messages,
+            model=self.model_name,
+            temperature=self.temperature,
+            tools=tools
+        )
+
         return api_response, latency
 
     def _request_candidates(self, inference_data, n, temperature):
@@ -43,18 +43,13 @@ class OpenAIHandler(BaseHandler):
         with the OpenAI `n` parameter (vLLM prefills the prompt once), falling
         back to sequential requests if the server rejects it.
         '''
-        kwargs = {
-            "messages": inference_data["messages"],
-            "model": self.model_name,
-            "temperature": temperature,
-        }
-        if inference_data.get("tools"):
-            kwargs["tools"] = inference_data["tools"]
-
         try:
             api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
                 n=n,
-                **kwargs
             )
             response_data = json.loads(api_response.json())
             usage = response_data.get("usage") or {}
@@ -65,6 +60,8 @@ class OpenAIHandler(BaseHandler):
                     "reasoning_content": message.get("reasoning_content", None),
                     "content": message.get("content", None),
                     "tool_calls": message.get("tool_calls", None),
+                    # The batched request reports usage once; attribute it to the
+                    # first candidate so aggregated totals stay accurate.
                     "input_token": usage.get("prompt_tokens", 0) if i == 0 else 0,
                     "output_token": usage.get("completion_tokens", 0) if i == 0 else 0,
                     "latency": latency if i == 0 else 0,
@@ -75,7 +72,12 @@ class OpenAIHandler(BaseHandler):
 
         candidates = []
         for _ in range(n):
-            api_response, latency = self.generate_with_backoff(**kwargs)
+            api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
+            )
             candidate = self._parse_api_response(api_response)
             candidate["latency"] = latency
             candidates.append(candidate)
