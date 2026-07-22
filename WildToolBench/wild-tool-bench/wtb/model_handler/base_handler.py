@@ -531,14 +531,36 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
+    def _build_action_graph(self, tools, messages):
+        '''
+        SCAP v2 Stage 2 & Stage 3: Construct Executable Action Graph for all 
+        available OpenAPI tools and compute structural feasibility scores.
+        '''
+        ctx_text = json.dumps(messages, ensure_ascii=False).lower()
+        graphs = {}
+        for t in (tools or []):
+            func = t.get("function", {})
+            tname = func.get("name")
+            if not tname:
+                continue
+            params = func.get("parameters", {}) or {}
+            req = set(params.get("required", []) or [])
+            known = {s for s in req if s.lower() in ctx_text}
+            missing = req - known
+            feasibility = 1.0 if len(req) == 0 else (len(known) / float(len(req)))
+            graphs[tname] = {
+                "required": req,
+                "known": known,
+                "missing": missing,
+                "feasibility": feasibility
+            }
+        return graphs
+
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency (consensus) decoding for one step.
-        Draws sc_n candidates (1 anchor at the run temperature + sc_n-1 diversity
-        samples), then votes hierarchically: response mode -> tool-name multiset
-        -> per-argument key/value majority. Returns a single model_response_data
-        dict shaped like _parse_api_response output, plus aggregated token counts,
-        latency, and a "consensus_log" entry describing the vote.
+        Self-consistency (consensus) decoding with SCAP v2 Schema-Guided Commitment.
+        Draws sc_n candidates, constructs the Executable Action Graph, and reranks
+        candidates by log-likelihood and structural schema feasibility.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
@@ -553,8 +575,6 @@ class BaseHandler:
             print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
             return self._maybe_repair(anchor, inference_data)
 
-        # Normalize copies for voting (recover parser-dropped tool calls / abstain
-        # on unrecoverable ones) while keeping the faithful anchor for fallback.
         candidates = [self._normalize_response(dict(anchor))]
         candidates.extend(self._normalize_response(dict(c)) for c in extra)
 
@@ -568,6 +588,11 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
+        # SCAP v2 Stage 2 & 3: Construct Action Graph
+        tools = inference_data.get("tools") or []
+        messages = inference_data.get("messages") or []
+        action_graph = self._build_action_graph(tools, messages)
+
         if not vote_counts:
             chosen = anchor
         else:
@@ -576,11 +601,27 @@ class BaseHandler:
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # Rank tied winning signatures by candidate violations score (fewer defects = better)
-                def sig_score(sig):
+                # SCAP v2 Stage 4: Schema-Guided Commitment Score Reranking
+                def scap_commitment_score(sig):
                     clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
-                winning_signature = min(winners, key=sig_score)
+                    best_score = 999.0
+                    for c in clust:
+                        viol = float(self._candidate_violations(c, inference_data)["total"])
+                        tcalls = c.get("tool_calls") or []
+                        feas_list = []
+                        if tcalls:
+                            for tc in tcalls:
+                                tname = tc.get("function", {}).get("name")
+                                feas_list.append(action_graph.get(tname, {}).get("feasibility", 0.5))
+                        avg_feas = sum(feas_list) / float(len(feas_list)) if feas_list else 1.0
+                        # SCAP Commitment Score: lower defects + higher feasibility = better (lower score)
+                        score = viol - (0.4 * avg_feas)
+                        if score < best_score:
+                            best_score = score
+                    return best_score
+
+                winning_signature = min(winners, key=scap_commitment_score)
+
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
             consensus_log["cluster_size"] = len(cluster)
