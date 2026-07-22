@@ -642,6 +642,12 @@ class BaseHandler:
             if (name, self._canon(parsed)) in history_calls:
                 total += 2
                 detail.append(f"{name}: exact repeat of a call already answered earlier")
+            elif any(h_name == name for h_name, _ in history_calls):
+                # Function name was already executed in prior turn. Penalize if un-requested in current turn prompt.
+                curr_task_l = inference_data.get("messages", [])[-1].get("content", "").lower() if inference_data.get("messages") else ""
+                if name.lower() not in curr_task_l and not any(_normalize_str(str(v)) in curr_task_l for v in parsed.values() if v and isinstance(v, (str, int, float))):
+                    total += 2
+                    detail.append(f"{name}: unrequested re-execution of a tool used in a prior turn")
         return {"total": total, "detail": detail}
 
     def _maybe_repair(self, chosen, inference_data):
