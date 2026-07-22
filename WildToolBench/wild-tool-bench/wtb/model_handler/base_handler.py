@@ -270,9 +270,44 @@ class BaseHandler:
                 dropped_keys.append(key)
         return kept, dropped_keys, ungrounded_required
 
+    def _match_verbatim_prompt_casing(self, arguments_dict, context_text):
+        if not isinstance(arguments_dict, dict) or not context_text:
+            return arguments_dict
+        
+        context_lower = context_text.lower()
+        cleaned = {}
+        for key, val in arguments_dict.items():
+            if isinstance(val, str) and val and len(val) >= 2:
+                val_lower = val.lower()
+                if val not in context_text and val_lower in context_lower:
+                    idx = context_lower.find(val_lower)
+                    if idx != -1:
+                        verbatim_sub = context_text[idx:idx + len(val)]
+                        cleaned[key] = verbatim_sub
+                    else:
+                        cleaned[key] = val
+                else:
+                    cleaned[key] = val
+            elif isinstance(val, list):
+                new_list = []
+                for item in val:
+                    if isinstance(item, str) and item and item not in context_text and item.lower() in context_lower:
+                        idx = context_lower.find(item.lower())
+                        if idx != -1:
+                            new_list.append(context_text[idx:idx + len(item)])
+                        else:
+                            new_list.append(item)
+                    else:
+                        new_list.append(item)
+                cleaned[key] = new_list
+            else:
+                cleaned[key] = val
+        return cleaned
+
     def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
         cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
         context_text = json.dumps(messages, ensure_ascii=False)
+        cleaned_args = self._match_verbatim_prompt_casing(cleaned_args, context_text)
         cleaned_args, dropped_keys, ungrounded_required = self._verify_and_filter_arguments(
             tc_name, cleaned_args, tools, context_text
         )
