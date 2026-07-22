@@ -249,10 +249,13 @@ class BaseHandler:
         mechanically instead of relying on the prompt being obeyed.
         '''
         required = set()
+        properties = {}
         for t in tools:
             func = t.get("function", {})
             if func.get("name") == tool_name:
-                required = set(func.get("parameters", {}).get("required", []))
+                params = func.get("parameters", {}) or {}
+                required = set(params.get("required", []))
+                properties = params.get("properties", {}) or {}
                 break
 
         kept = {}
@@ -266,9 +269,45 @@ class BaseHandler:
                     ungrounded_required.append(key)
             elif grounded:
                 kept[key] = value
+            elif self._is_intent_argument(key, value, properties.get(key)):
+                # Ungrounded, but of a kind that literal grounding cannot see:
+                # kept deliberately (see _is_intent_argument).
+                kept[key] = value
             else:
                 dropped_keys.append(key)
         return kept, dropped_keys, ungrounded_required
+
+    @staticmethod
+    def _is_intent_argument(key, value, prop_schema):
+        '''
+        Guard against over-dropping by the receipt gate.
+
+        The gate drops optional arguments whose value cannot be quoted from the
+        conversation. That is correct for fabricated plumbing defaults
+        (format="JSON", quality=..., filter=...), but three kinds of argument are
+        legitimately unquotable and were being destroyed:
+
+          * booleans  - they encode user INTENT ("in detail" -> includeStats=true),
+                        never data, so they can never appear verbatim;
+          * numerics  - counts/radii/limits are usually computed or restated
+                        rather than copied character-for-character;
+          * short codes (<= 3 chars) - semantic mappings the model resolves
+                        itself ("China" -> "CN", "English" -> "en").
+
+        Enum-typed arguments are deliberately NOT protected: measured on the
+        clean_demo run, dropping ungrounded enums is right 11 times and wrong 3,
+        so the gate's existing enum behaviour is a net win and is left intact.
+        '''
+        prop_schema = prop_schema or {}
+        if "enum" in prop_schema:
+            return False
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, str) and 0 < len(value.strip()) <= 3:
+            return True
+        return False
 
     def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
         cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
@@ -681,30 +720,87 @@ class BaseHandler:
             rows.append("\n".join(lines))
         return "\n\n".join(rows)
 
+    # Transport/plumbing keys that look like identifiers but carry no entity
+    # meaning ("status_code: 200" was polluting the surfaced facts).
+    _NON_ENTITY_ID_KEYS = {
+        "status_code", "statuscode", "http_code", "httpcode",
+        "error_code", "errcode", "ret_code", "retcode", "response_code",
+    }
+    # Sibling fields that let a human (or model) recognise WHICH entity an id is.
+    _ENTITY_LABEL_KEYS = (
+        "name", "title", "label", "date", "time", "city", "location",
+        "address", "type", "category", "status", "description", "amount", "price",
+    )
+
     def _extract_observation_facts(self, history_answer_lists):
+        '''
+        Build entity cards from prior-turn observations.
+
+        The previous version emitted a flat list of bare identifiers:
+
+            - activity_id: show123
+            - activity_id: show456
+
+        which is unusable for reference resolution - nothing says which show is
+        which, so "the show on the 13th" or "the first one" cannot be bound.
+        Each identifier is now emitted together with the descriptive fields that
+        sit beside it in the same observation object:
+
+            - activity_id: show123  (name: Cirque du Soleil, date: 2024-07-13)
+            - activity_id: show456  (name: David Copperfield Magic Show, date: 2024-07-14)
+
+        Only prior turns are used, so nothing about the current turn leaks.
+        '''
         if not history_answer_lists:
             return []
-        facts = []
+        # entity -> ordered set of descriptive labels, merged across turns so a
+        # later, richer observation enriches the same id instead of duplicating it.
+        entities = {}
 
-        def collect(obj):
+        def is_scalar(v):
+            return isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip()
+
+        def walk(obj):
             if isinstance(obj, dict):
+                ids = []
+                labels = []
                 for k, v in obj.items():
-                    if isinstance(v, (str, int, float)) and v:
-                        s_v = str(v).strip()
-                        if len(s_v) >= 3 and (k.lower().endswith("id") or k.lower().endswith("code") or k.lower().endswith("number")):
-                            facts.append(f"{k}: {s_v}")
-                    else:
-                        collect(v)
+                    key_l = k.lower()
+                    if key_l in self._NON_ENTITY_ID_KEYS or not is_scalar(v):
+                        continue
+                    s_v = str(v).strip()
+                    if len(s_v) >= 3 and (
+                        key_l.endswith("id") or key_l.endswith("code")
+                        or key_l.endswith("number") or key_l.endswith("no")
+                        or key_l.endswith("sku") or key_l.endswith("ref")
+                    ):
+                        ids.append((k, s_v))
+                    elif any(key_l == lk or key_l.endswith("_" + lk) for lk in self._ENTITY_LABEL_KEYS):
+                        labels.append(f"{k}: {s_v}")
+                for ident in ids:
+                    slot = entities.setdefault(ident, {})
+                    for lab in labels:
+                        slot[lab] = None
+                for v in obj.values():
+                    if isinstance(v, (dict, list)):
+                        walk(v)
             elif isinstance(obj, list):
                 for item in obj:
-                    collect(item)
+                    walk(item)
 
         for answer_list in history_answer_lists:
             for ans in answer_list:
                 obs = ans.get("observation")
                 if obs:
-                    collect(obs)
-        return list(dict.fromkeys(facts))
+                    walk(obs)
+
+        cards = []
+        for (k, s_v), labels in entities.items():
+            card = f"{k}: {s_v}"
+            if labels:
+                card += "  (" + ", ".join(list(labels)[:5]) + ")"
+            cards.append(card)
+        return cards
 
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
         messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
