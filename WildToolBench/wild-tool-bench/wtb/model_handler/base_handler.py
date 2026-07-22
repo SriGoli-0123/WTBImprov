@@ -572,12 +572,15 @@ class BaseHandler:
             chosen = anchor
         else:
             best_count = max(vote_counts.values())
-            winners = {s for s, v in vote_counts.items() if v == best_count}
-            if signatures[0] in winners:
-                # Tie or win including the anchor: trust the low-temperature sample.
-                winning_signature = signatures[0]
+            winners = [s for s, v in vote_counts.items() if v == best_count]
+            if len(winners) == 1:
+                winning_signature = winners[0]
             else:
-                winning_signature = next(s for s in signatures if s in winners)
+                # Rank tied winning signatures by candidate violations score (fewer defects = better)
+                def sig_score(sig):
+                    clust = [c for c, s in zip(candidates, signatures) if s == sig]
+                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
+                winning_signature = min(winners, key=sig_score)
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
             consensus_log["cluster_size"] = len(cluster)
@@ -780,12 +783,6 @@ class BaseHandler:
         "status_code", "statuscode", "http_code", "httpcode",
         "error_code", "errcode", "ret_code", "retcode", "response_code",
     }
-    # Sibling fields that let a human (or model) recognise WHICH entity an id is.
-    # Deliberately SHORT/factual only. Prose fields (description, summary) and
-    # attribute-ish fields (type, category, status, amount, price) are excluded:
-    # they made the block read like a queryable database preview, which measurably
-    # pushed the model into calling tools on plain-chat turns.
-    _ENTITY_LABEL_KEYS = ("name", "title", "label", "date", "time", "location")
     _LABEL_MAX_CHARS = 40
 
     def _extract_observation_facts(self, history_answer_lists):
