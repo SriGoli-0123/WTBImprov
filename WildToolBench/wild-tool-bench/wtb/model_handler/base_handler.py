@@ -810,6 +810,9 @@ class BaseHandler:
                         key_l.endswith("id") or key_l.endswith("code")
                         or key_l.endswith("number") or key_l.endswith("no")
                         or key_l.endswith("sku") or key_l.endswith("ref")
+                        or key_l.endswith("reference") or key_l.endswith("token")
+                        or key_l.endswith("key") or key_l.endswith("uuid")
+                        or key_l.endswith("hash")
                     ):
                         ids.append((k, s_v))
                     elif (
