@@ -43,6 +43,21 @@ class OpenAIHandler(BaseHandler):
 
         return api_response, latency
 
+    def _request_text_only(self, inference_data):
+        '''
+        Re-ask the model on the same conversation with tool calling disabled, so
+        it must respond in words. Used by the ask-instead-of-guess gate: the
+        clarifying question stays authored by the model, never by the harness.
+        '''
+        api_response, _ = self.generate_with_backoff(
+            messages=inference_data["messages"],
+            model=self.model_name,
+            temperature=self.temperature,
+            tools=inference_data["tools"],
+            tool_choice="none",
+        )
+        return json.loads(api_response.json())["choices"][0]["message"].get("content")
+
     def _request_candidates(self, inference_data, n, temperature):
         '''
         Draw n diversity samples for consensus decoding. Tries a single request

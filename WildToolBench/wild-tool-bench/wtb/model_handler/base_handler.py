@@ -35,6 +35,11 @@ class BaseHandler:
         # flipped 18 Chat turns from a text answer to a tool call (-6 net Chat).
         # Set WTB_ENTITY_LABELS=1 to re-enable the trimmed version for a pilot.
         self.entity_labels = os.getenv("WTB_ENTITY_LABELS", "0").strip().lower() not in ("0", "false", "")
+        # Ask-instead-of-guess gate. Measured on result_igar_v3: fires on 103
+        # first steps, of which 40 are turns where gold wanted a clarification
+        # and the task was failing, 58 were failing regardless, and 5 were
+        # passing. Set WTB_ASK_GATE=0 to disable.
+        self.ask_gate = os.getenv("WTB_ASK_GATE", "1").strip().lower() not in ("0", "false", "")
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         if isinstance(arguments_dict, str):
@@ -812,6 +817,81 @@ class BaseHandler:
             cards.append(card)
         return cards
 
+    # A required value shorter than this is treated as a semantic mapping the
+    # model resolved itself ("Phoenix" -> "PHX", "China" -> "CN"), not a
+    # fabrication. Measured: raising the floor from 0 to 4 chars cut the
+    # would-break count from 10 to 5 while keeping 40 of 42 catches.
+    _ASK_MIN_LEN = 4
+
+    def _unfounded_required(self, tool_calls, tools, context_text):
+        '''
+        Receipts for REQUIRED arguments.
+
+        The receipt gate already drops optional arguments that cannot be traced
+        to the conversation, but required ones are always kept (the schema wins).
+        That leaves the case where the model invents the one value it was
+        supposed to ask for. This reports those, so the caller can hand the turn
+        back to the user instead of acting on a guess.
+
+        Deliberately narrow - a value is only "unfounded" if it is a plain string
+        of at least _ASK_MIN_LEN characters, not a resolved date (computed from
+        Current Date, so legitimately absent upstream), not a container, and not
+        numeric/boolean. Those kinds are unquotable by nature, not invented.
+        '''
+        schemas = {}
+        for t in tools:
+            func = t.get("function", {})
+            if func.get("name"):
+                schemas[func["name"]] = func
+        normalized_ctx = _normalize_str(context_text)
+        hits = []
+        for tc in tool_calls or []:
+            func = tc.get("function", {})
+            name = func.get("name")
+            schema = schemas.get(name)
+            if not schema:
+                continue
+            required = set(schema.get("parameters", {}).get("required", []) or [])
+            args = func.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    continue
+            if not isinstance(args, dict):
+                continue
+            for key in required:
+                value = args.get(key)
+                if value is None or isinstance(value, (dict, list, bool, int, float)):
+                    continue
+                text = str(value).strip()
+                if len(text) < self._ASK_MIN_LEN:
+                    continue
+                if self._DATE_RECEIPT_RE.match(text):
+                    continue
+                normalized = _normalize_str(text)
+                if normalized and normalized not in normalized_ctx:
+                    hits.append({"tool": name, "param": key, "value": text})
+        return hits
+
+    def _authored_clarification(self, inference_data, content):
+        '''
+        Turn the current step into a clarification WITHOUT fabricating text.
+        If the model already wrote something alongside its call, that is used.
+        Otherwise the model is asked once more on the same conversation with
+        tool calling disabled, so the question is still authored by the model.
+        Returns None when no text could be obtained (caller keeps the call).
+        '''
+        if content and content.strip():
+            return content
+        if not hasattr(self, "_request_text_only"):
+            return None
+        try:
+            return self._request_text_only(inference_data)
+        except Exception as e:
+            print(f"Clarification re-prompt failed, keeping original call: {e}", flush=True)
+            return None
+
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
         messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
         ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
@@ -934,6 +1014,28 @@ class BaseHandler:
                     cleaned_tool_calls.append(tc)
                 tool_calls = cleaned_tool_calls
                 model_response_data["tool_calls"] = tool_calls
+
+                # Ask-instead-of-guess: if a REQUIRED value was invented rather
+                # than taken from the conversation, hand the turn back to the
+                # user rather than acting on the guess.
+                if self.ask_gate:
+                    unfounded = self._unfounded_required(
+                        tool_calls, tools, json.dumps(messages, ensure_ascii=False)
+                    )
+                    if unfounded:
+                        clarification = self._authored_clarification(inference_data, content)
+                        if clarification:
+                            inference_log.setdefault("ask_gate_notes", []).append({
+                                "step": step,
+                                "unfounded_required": unfounded,
+                                "suppressed_calls": [
+                                    tc.get("function", {}).get("name") for tc in tool_calls
+                                ],
+                            })
+                            content = clarification
+                            tool_calls = None
+                            model_response_data["content"] = content
+                            model_response_data["tool_calls"] = None
             input_token = model_response_data["input_token"]
             output_token = model_response_data["output_token"]
             latency.append(query_latency)
