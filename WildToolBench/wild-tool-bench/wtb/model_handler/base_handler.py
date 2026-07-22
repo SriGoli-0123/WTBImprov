@@ -518,12 +518,9 @@ class BaseHandler:
                         total += 1
                         detail.append(f"{name}.{key}: optional argument with no basis in the conversation")
                     elif (isinstance(value, str) and self._DATE_RECEIPT_RE.match(value.strip())
-                          and not self._date_value_ok(value, context_text)):
-                        # Required args are never stripped, but a date that
-                        # matches no computed candidate is a high-precision
-                        # signal for selection and repair.
+                          and not self._is_grounded(value, context_text)):
                         total += 2
-                        detail.append(f"{name}.{key}: date does not match any date derivable from the conversation")
+                        detail.append(f"{name}.{key}: date string has no receipt in conversation or history")
             if (name, self._canon(parsed)) in history_calls:
                 total += 2
                 detail.append(f"{name}: exact repeat of a call already answered earlier")
