@@ -118,7 +118,6 @@ class BaseHandler:
     # A resolved date/time value is a legitimate COMPUTE receipt even though
     # its digits don't appear verbatim anywhere upstream - it was derived
     # from Current Date, not copied.
-    _CLOCK_TIME_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
     _DATE_RECEIPT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
     _ENV_DATE_RE = re.compile(r"Current Date: (\d{4})-(\d{2})-(\d{2})")
     _MONTH_DAY_RE = re.compile(
@@ -341,18 +340,7 @@ class BaseHandler:
             return True
         if isinstance(value, (int, float)):
             return True
-        if isinstance(value, (dict, list)):
-            # A structured argument is assembled from several places at once, so
-            # literal grounding of the whole object can never succeed even when
-            # every part of it is legitimate (e.g. a timeRange built from a start
-            # and an end, or a list of records built from an earlier result).
-            return True
         if isinstance(value, str) and value.strip():
-            text = value.strip()
-            if self._CLOCK_TIME_RE.match(text):
-                # Clock times are computed the same way dates are, so they are
-                # absent upstream for the same reason a resolved date is.
-                return True
             return self._is_abbreviation_of_context(value, context_text)
         return False
 
@@ -485,32 +473,6 @@ class BaseHandler:
             })
         return recovered or None
 
-    def _topological_sort_tool_calls(self, tool_calls, tools):
-        '''
-        Topological Tool Dependency Ordering (IGAR v10).
-        If tool call B requires a parameter property produced by tool A,
-        sort tool A before tool B in the execution sequence.
-        '''
-        if not tool_calls or len(tool_calls) <= 1:
-            return tool_calls
-        schema_map = {t.get("function", {}).get("name"): t.get("function", {}) for t in (tools or [])}
-        def depends_on(tc1, tc2):
-            name1 = tc1.get("function", {}).get("name")
-            name2 = tc2.get("function", {}).get("name")
-            if not name1 or not name2 or name1 == name2:
-                return False
-            f1 = schema_map.get(name1, {})
-            req1 = set(f1.get("parameters", {}).get("required", []))
-            name2_lower = name2.lower()
-            return any(req_key.lower() in name2_lower for req_key in req1)
-        sorted_calls = list(tool_calls)
-        n = len(sorted_calls)
-        for i in range(n):
-            for j in range(i + 1, n):
-                if depends_on(sorted_calls[i], sorted_calls[j]):
-                    sorted_calls[i], sorted_calls[j] = sorted_calls[j], sorted_calls[i]
-        return sorted_calls
-
     def _normalize_response(self, data):
         '''
         Rescue tool calls that came back as text because the server-side parser
@@ -584,15 +546,12 @@ class BaseHandler:
             chosen = anchor
         else:
             best_count = max(vote_counts.values())
-            winners = [s for s, v in vote_counts.items() if v == best_count]
-            if len(winners) == 1:
-                winning_signature = winners[0]
+            winners = {s for s, v in vote_counts.items() if v == best_count}
+            if signatures[0] in winners:
+                # Tie or win including the anchor: trust the low-temperature sample.
+                winning_signature = signatures[0]
             else:
-                # Rank tied winning signatures by candidate violations score (fewer defects = better)
-                def sig_score(sig):
-                    clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
-                winning_signature = min(winners, key=sig_score)
+                winning_signature = next(s for s in signatures if s in winners)
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
             consensus_log["cluster_size"] = len(cluster)
@@ -673,6 +632,13 @@ class BaseHandler:
                     if key not in required and not self._is_grounded(value, context_text):
                         total += 1
                         detail.append(f"{name}.{key}: optional argument with no basis in the conversation")
+                    elif (isinstance(value, str) and self._DATE_RECEIPT_RE.match(value.strip())
+                          and not self._date_value_ok(value, context_text)):
+                        # Required args are never stripped, but a date that
+                        # matches no computed candidate is a high-precision
+                        # signal for selection and repair.
+                        total += 2
+                        detail.append(f"{name}.{key}: date does not match any date derivable from the conversation")
             if (name, self._canon(parsed)) in history_calls:
                 total += 2
                 detail.append(f"{name}: exact repeat of a call already answered earlier")
@@ -795,6 +761,12 @@ class BaseHandler:
         "status_code", "statuscode", "http_code", "httpcode",
         "error_code", "errcode", "ret_code", "retcode", "response_code",
     }
+    # Sibling fields that let a human (or model) recognise WHICH entity an id is.
+    # Deliberately SHORT/factual only. Prose fields (description, summary) and
+    # attribute-ish fields (type, category, status, amount, price) are excluded:
+    # they made the block read like a queryable database preview, which measurably
+    # pushed the model into calling tools on plain-chat turns.
+    _ENTITY_LABEL_KEYS = ("name", "title", "label", "date", "time", "location")
     _LABEL_MAX_CHARS = 40
 
     def _extract_observation_facts(self, history_answer_lists):
@@ -818,32 +790,21 @@ class BaseHandler:
         '''
         if not history_answer_lists:
             return []
-        # (key, value) -> position label. Values that came from an ordered list
-        # of objects keep the 1-based index of the element they belong to; the
-        # first sighting of a value wins so a value repeated later does not lose
-        # its original position.
+        # entity -> ordered set of descriptive labels, merged across turns so a
+        # later, richer observation enriches the same id instead of duplicating it.
         entities = {}
-
-        def walk(obj, position=""):
+        def walk(obj):
             if isinstance(obj, dict):
                 for k, v in obj.items():
                     if isinstance(v, (str, int, float)) and not isinstance(v, bool):
                         s_v = str(v).strip()
                         if s_v:
-                            entities.setdefault((k, s_v), position)
+                            entities[(k, s_v)] = None
                     elif isinstance(v, (dict, list)):
-                        walk(v, position)
+                        walk(v)
             elif isinstance(obj, list):
-                # An ordered list of objects is exactly what the user points at
-                # when they say "the first" / "the last two" / "the sixth", so
-                # number its elements. Scalar lists carry no such handle.
-                records = [item for item in obj if isinstance(item, dict)]
-                if len(records) > 1:
-                    for idx, item in enumerate(records, start=1):
-                        walk(item, f"[{idx}] ")
-                else:
-                    for item in obj:
-                        walk(item, position)
+                for item in obj:
+                    walk(item)
 
         for answer_list in history_answer_lists:
             for ans in answer_list:
@@ -851,7 +812,7 @@ class BaseHandler:
                 if obs:
                     walk(obs)
 
-        return [f"{position}{k}: {s_v}" for (k, s_v), position in entities.items()]
+        return [f"{k}: {s_v}" for (k, s_v) in entities.keys()]
 
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
@@ -1045,7 +1006,7 @@ class BaseHandler:
                     except Exception as e:
                         print(f"Cleaner error: {e}", flush=True)
                     cleaned_tool_calls.append(tc)
-                tool_calls = self._topological_sort_tool_calls(cleaned_tool_calls, tools)
+                tool_calls = cleaned_tool_calls
                 model_response_data["tool_calls"] = tool_calls
 
                 # Ask-instead-of-guess: if a REQUIRED value was invented rather
@@ -1056,53 +1017,19 @@ class BaseHandler:
                         tool_calls, tools, json.dumps(messages, ensure_ascii=False)
                     )
                     if unfounded:
-                        # Verify unfounded required parameters match official OpenAPI schema required keys
-                        missing_by_tool = {}
-                        for item in unfounded:
-                            tname = item.get("tool")
-                            pkey = item.get("param")
-                            if tname and pkey:
-                                for t in tools:
-                                    func = t.get("function", {})
-                                    if func.get("name") == tname:
-                                        req_set = set(func.get("parameters", {}).get("required", []) or [])
-                                        if pkey in req_set:
-                                            missing_by_tool.setdefault(tname, []).append(pkey)
-                                        break
-                        if missing_by_tool:
-                            tool_list = [
-                                {"tool_name": tname, "missing_required_parameters": pkeys}
-                                for tname, pkeys in missing_by_tool.items()
-                            ]
-                            ask_call = [{
-                                "id": f"chatcmpl-tool-ask-{step}",
-                                "type": "function",
-                                "function": {
-                                    "name": "ask_user_for_required_parameters",
-                                    "arguments": json.dumps({"tool_list": tool_list}, ensure_ascii=False)
-                                }
-                            }]
+                        clarification = self._authored_clarification(inference_data, content)
+                        if clarification:
                             inference_log.setdefault("ask_gate_notes", []).append({
                                 "step": step,
                                 "unfounded_required": unfounded,
-                                "structured_ask_call": ask_call
+                                "suppressed_calls": [
+                                    tc.get("function", {}).get("name") for tc in tool_calls
+                                ],
                             })
-                            model_response_data["tool_calls"] = ask_call
-                            model_response_data["content"] = None
-                        else:
-                            clarification = self._authored_clarification(inference_data, content)
-                            if clarification:
-                                inference_log.setdefault("ask_gate_notes", []).append({
-                                    "step": step,
-                                    "unfounded_required": unfounded,
-                                    "suppressed_calls": [
-                                        tc.get("function", {}).get("name") for tc in tool_calls
-                                    ],
-                                })
-                                content = clarification
-                                tool_calls = None
-                                model_response_data["content"] = content
-                                model_response_data["tool_calls"] = None
+                            content = clarification
+                            tool_calls = None
+                            model_response_data["content"] = content
+                            model_response_data["tool_calls"] = None
             input_token = model_response_data["input_token"]
             output_token = model_response_data["output_token"]
             latency.append(query_latency)
