@@ -118,6 +118,7 @@ class BaseHandler:
     # A resolved date/time value is a legitimate COMPUTE receipt even though
     # its digits don't appear verbatim anywhere upstream - it was derived
     # from Current Date, not copied.
+    _CLOCK_TIME_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
     _DATE_RECEIPT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
     _ENV_DATE_RE = re.compile(r"Current Date: (\d{4})-(\d{2})-(\d{2})")
     _MONTH_DAY_RE = re.compile(
@@ -340,7 +341,18 @@ class BaseHandler:
             return True
         if isinstance(value, (int, float)):
             return True
+        if isinstance(value, (dict, list)):
+            # A structured argument is assembled from several places at once, so
+            # literal grounding of the whole object can never succeed even when
+            # every part of it is legitimate (e.g. a timeRange built from a start
+            # and an end, or a list of records built from an earlier result).
+            return True
         if isinstance(value, str) and value.strip():
+            text = value.strip()
+            if self._CLOCK_TIME_RE.match(text):
+                # Clock times are computed the same way dates are, so they are
+                # absent upstream for the same reason a resolved date is.
+                return True
             return self._is_abbreviation_of_context(value, context_text)
         return False
 
