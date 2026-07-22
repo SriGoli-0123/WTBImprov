@@ -31,6 +31,10 @@ class BaseHandler:
         # can override this if multi-sample ablation is ever requested.
         self.sc_n = int(os.getenv("WTB_SC_N", "1"))
         self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
+        # Entity-card labels are OFF by default: measured on result_igar_v2 they
+        # flipped 18 Chat turns from a text answer to a tool call (-6 net Chat).
+        # Set WTB_ENTITY_LABELS=1 to re-enable the trimmed version for a pilot.
+        self.entity_labels = os.getenv("WTB_ENTITY_LABELS", "0").strip().lower() not in ("0", "false", "")
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         if isinstance(arguments_dict, str):
@@ -727,10 +731,12 @@ class BaseHandler:
         "error_code", "errcode", "ret_code", "retcode", "response_code",
     }
     # Sibling fields that let a human (or model) recognise WHICH entity an id is.
-    _ENTITY_LABEL_KEYS = (
-        "name", "title", "label", "date", "time", "city", "location",
-        "address", "type", "category", "status", "description", "amount", "price",
-    )
+    # Deliberately SHORT/factual only. Prose fields (description, summary) and
+    # attribute-ish fields (type, category, status, amount, price) are excluded:
+    # they made the block read like a queryable database preview, which measurably
+    # pushed the model into calling tools on plain-chat turns.
+    _ENTITY_LABEL_KEYS = ("name", "title", "label", "date", "time", "location")
+    _LABEL_MAX_CHARS = 40
 
     def _extract_observation_facts(self, history_answer_lists):
         '''
@@ -775,8 +781,12 @@ class BaseHandler:
                         or key_l.endswith("sku") or key_l.endswith("ref")
                     ):
                         ids.append((k, s_v))
-                    elif any(key_l == lk or key_l.endswith("_" + lk) for lk in self._ENTITY_LABEL_KEYS):
-                        labels.append(f"{k}: {s_v}")
+                    elif (
+                        self.entity_labels
+                        and len(s_v) <= self._LABEL_MAX_CHARS
+                        and any(key_l == lk or key_l.endswith("_" + lk) for lk in self._ENTITY_LABEL_KEYS)
+                    ):
+                        labels.append(s_v)
                 for ident in ids:
                     slot = entities.setdefault(ident, {})
                     for lab in labels:
@@ -798,7 +808,7 @@ class BaseHandler:
         for (k, s_v), labels in entities.items():
             card = f"{k}: {s_v}"
             if labels:
-                card += "  (" + ", ".join(list(labels)[:5]) + ")"
+                card += "  (" + ", ".join(list(labels)[:2]) + ")"
             cards.append(card)
         return cards
 
