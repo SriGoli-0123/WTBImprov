@@ -576,37 +576,10 @@ class BaseHandler:
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # Rank tied winning signatures using Entropy-Grounded Consensus Selection (EGCS)
-                ctx_text = json.dumps(inference_data.get("messages", []), ensure_ascii=False).lower()
+                # Rank tied winning signatures by candidate violations score (fewer defects = better)
                 def sig_score(sig):
                     clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                    best_candidate_score = 999.0
-                    for c in clust:
-                        viol = float(self._candidate_violations(c, inference_data)["total"])
-                        tcalls = c.get("tool_calls") or []
-                        grounded_ratio = 1.0
-                        if tcalls:
-                            total_args = 0
-                            grounded_args = 0
-                            for tc in tcalls:
-                                args = tc.get("function", {}).get("arguments", {})
-                                if isinstance(args, str):
-                                    try:
-                                        args = json.loads(args)
-                                    except Exception:
-                                        args = {}
-                                if isinstance(args, dict):
-                                    for k, v in args.items():
-                                        total_args += 1
-                                        if str(v).lower() in ctx_text:
-                                            grounded_args += 1
-                            if total_args > 0:
-                                grounded_ratio = float(grounded_args) / float(total_args)
-                        score = viol - (grounded_ratio * 0.5)
-                        if score < best_candidate_score:
-                            best_candidate_score = score
-                    return best_candidate_score
-
+                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
                 winning_signature = min(winners, key=sig_score)
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
