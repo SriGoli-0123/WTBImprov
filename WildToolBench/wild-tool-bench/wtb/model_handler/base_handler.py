@@ -803,28 +803,11 @@ class BaseHandler:
                 labels = []
                 for k, v in obj.items():
                     key_l = k.lower()
-                    if key_l in self._NON_ENTITY_ID_KEYS or not is_scalar(v):
+                    if key_l in ("status_code", "status", "http_status") or not is_scalar(v):
                         continue
                     s_v = str(v).strip()
-                    if len(s_v) >= 3 and (
-                        key_l.endswith("id") or key_l.endswith("code")
-                        or key_l.endswith("number") or key_l.endswith("no")
-                        or key_l.endswith("sku") or key_l.endswith("ref")
-                        or key_l.endswith("reference") or key_l.endswith("token")
-                        or key_l.endswith("key") or key_l.endswith("uuid")
-                        or key_l.endswith("hash")
-                    ):
-                        ids.append((k, s_v))
-                    elif (
-                        self.entity_labels
-                        and len(s_v) <= self._LABEL_MAX_CHARS
-                        and any(key_l == lk or key_l.endswith("_" + lk) for lk in self._ENTITY_LABEL_KEYS)
-                    ):
-                        labels.append(s_v)
-                for ident in ids:
-                    slot = entities.setdefault(ident, {})
-                    for lab in labels:
-                        slot[lab] = None
+                    if 3 <= len(s_v) <= 40 and s_v.lower() not in ("200", "ok", "success", "true", "false", "null"):
+                        entities[(k, s_v)] = {}
                 for v in obj.values():
                     if isinstance(v, (dict, list)):
                         walk(v)
