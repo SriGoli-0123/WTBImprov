@@ -306,14 +306,15 @@ class BaseHandler:
         if "enum" in prop_schema:
             return False
 
-        _PLUMBING_KEYS = {"limit", "offset", "page", "format", "rounding", "include_address", "include_details", "sync"}
-        if key.lower() in _PLUMBING_KEYS and key.lower() not in context_text.lower():
-            return False
+        # Pure Agnostic Key-Grounding Check (Zero Hardcoding):
+        # Tokenize camelCase, snake_case, or PascalCase keys into sub-tokens (e.g. includePIREP -> ["include", "pirep"]).
+        # If any sub-token (e.g. "pirep") appears in the prompt context, it is grounded intent.
+        if key:
+            sub_keys = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|[A-Z]+|[0-9]+", key)
+            tokens = [t.lower() for t in sub_keys if len(t) >= 2]
+            if any(t in context_text.lower() for t in tokens):
+                return True
 
-        if isinstance(value, bool):
-            return True
-        if isinstance(value, (int, float)):
-            return True
         if isinstance(value, str) and 0 < len(value.strip()) <= 3:
             return True
         return False
