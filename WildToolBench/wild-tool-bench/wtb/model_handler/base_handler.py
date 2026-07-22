@@ -531,16 +531,17 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
-    def _build_session_frontier(self, tools, messages):
+    def _minimum_commitment_gate(self, tools, messages):
         '''
-        RAFS Component 1: Build the Session Frontier.
-        Extracts slot coverage across OpenAPI tools, unresolved required slots,
-        and current feasible tool families.
+        MCSG Core Component: Minimum-Commitment Schema Gate.
+        Computes pre-generation action class before candidate commitment:
+          1. 'grounded_tool': Tool path has 100% required parameters grounded.
+          2. 'under_specified': Required parameter missing. Returns highest-coverage missing slot.
+          3. 'ambiguous_chat': No tool intent grounded -> Chat mode.
         '''
         ctx_text = json.dumps(messages, ensure_ascii=False).lower()
         slot_coverage = Counter()
-        unresolved_slots = set()
-        feasible_tools = set()
+        tool_status = {}
 
         for t in (tools or []):
             func = t.get("function", {})
@@ -551,79 +552,50 @@ class BaseHandler:
             req = set(params.get("required", []) or [])
             for slot in req:
                 slot_coverage[slot] += 1
-                if slot.lower() not in ctx_text:
-                    unresolved_slots.add(slot)
-            
+
             missing = {s for s in req if s.lower() not in ctx_text}
-            if len(missing) == 0:
-                feasible_tools.add(tname)
+            tool_status[tname] = {
+                "required": req,
+                "missing": missing,
+                "fully_grounded": len(missing) == 0
+            }
 
+        fully_grounded_tools = [t for t, status in tool_status.items() if status["fully_grounded"]]
+        
+        # Rule 1: Fully Grounded Tool Path Available
+        if len(fully_grounded_tools) >= 1:
+            return {
+                "action_class": "grounded_tool",
+                "target_tools": fully_grounded_tools,
+                "highest_missing_slot": None
+            }
+
+        # Rule 2: Under-Specified (Required parameters missing across candidate tools)
+        missing_slots = Counter()
+        for t, status in tool_status.items():
+            for m_slot in status["missing"]:
+                missing_slots[m_slot] += slot_coverage[m_slot]
+
+        if missing_slots:
+            highest_missing_slot = missing_slots.most_common(1)[0][0]
+            return {
+                "action_class": "under_specified",
+                "target_tools": list(tool_status.keys()),
+                "highest_missing_slot": highest_missing_slot
+            }
+
+        # Rule 3: Ambiguous / Conversational Chat State
         return {
-            "slot_coverage": slot_coverage,
-            "unresolved_slots": unresolved_slots,
-            "feasible_tools": feasible_tools
+            "action_class": "ambiguous_chat",
+            "target_tools": [],
+            "highest_missing_slot": None
         }
-
-    def _recoverability_score(self, candidate, inference_data, frontier):
-        '''
-        RAFS Component 2: Compute candidate recoverability score.
-        Higher score = candidate leaves the session more recoverable.
-        Score = validity + grounding + frontier_coverage - penalties
-        '''
-        viol = float(self._candidate_violations(candidate, inference_data)["total"])
-        validity_bonus = 1.0 if viol == 0 else -1.0 * viol
-
-        tcalls = candidate.get("tool_calls") or []
-        ctx_text = json.dumps(inference_data.get("messages", []), ensure_ascii=False).lower()
-
-        grounding_bonus = 0.0
-        irreversibility_penalty = 0.0
-        invented_required_penalty = 0.0
-        frontier_coverage_bonus = 0.0
-
-        if tcalls:
-            total_args = 0
-            grounded_args = 0
-            for tc in tcalls:
-                tname = tc.get("function", {}).get("name")
-                args = tc.get("function", {}).get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {}
-                
-                # Check for speculative tool calls when required slots are missing
-                if tname not in frontier["feasible_tools"] and len(frontier["unresolved_slots"]) > 0:
-                    irreversibility_penalty += 1.0
-
-                if isinstance(args, dict):
-                    for k, v in args.items():
-                        total_args += 1
-                        val_str = str(v).lower()
-                        if val_str in ctx_text:
-                            grounded_args += 1
-                            # Check slot coverage bonus
-                            if k in frontier["slot_coverage"]:
-                                frontier_coverage_bonus += 0.1 * frontier["slot_coverage"][k]
-                        else:
-                            # Ungrounded argument check
-                            invented_required_penalty += 0.5
-
-            if total_args > 0:
-                grounding_bonus = 0.5 * (float(grounded_args) / float(total_args))
-        else:
-            # Text/Clarify candidate: if required slots are missing, clarify preserves frontier
-            if len(frontier["unresolved_slots"]) > 0:
-                frontier_coverage_bonus += 0.8
-
-        return validity_bonus + grounding_bonus + frontier_coverage_bonus - irreversibility_penalty - invented_required_penalty
 
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency (consensus) decoding with RAFS (Recoverability-Aware Frontier Search).
-        Builds session frontier, evaluates candidate recoverability, and selects
-        the path that keeps the session most recoverable.
+        Self-consistency (consensus) decoding with MCSG (Minimum-Commitment Schema Gate).
+        Evaluates pre-generation action class (grounded_tool, under_specified, ambiguous_chat)
+        and locks commitment before final output emission.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
@@ -651,10 +623,11 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        # RAFS: Build Session Frontier
+        # MCSG: Evaluate Pre-Generation Action Gate
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
-        frontier = self._build_session_frontier(tools, messages)
+        mcsg_state = self._minimum_commitment_gate(tools, messages)
+        consensus_log["mcsg_state"] = mcsg_state
 
         if not vote_counts:
             chosen = anchor
@@ -664,12 +637,14 @@ class BaseHandler:
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # RAFS Reranking: Pick winning signature with highest recoverability score
-                def rafs_rank_score(sig):
-                    clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                    return max(self._recoverability_score(c, inference_data, frontier) for c in clust)
-
-                winning_signature = max(winners, key=rafs_rank_score)
+                # MCSG Constrained Voting: If MCSG indicates ambiguous_chat, prefer text signature
+                if mcsg_state["action_class"] == "ambiguous_chat" and ("text",) in winners:
+                    winning_signature = ("text",)
+                else:
+                    def mcsg_rank_score(sig):
+                        clust = [c for c, s in zip(candidates, signatures) if s == sig]
+                        return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
+                    winning_signature = min(winners, key=mcsg_rank_score)
 
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
@@ -677,11 +652,11 @@ class BaseHandler:
 
             chosen = dict(cluster[0])
             if winning_signature[0] == "tools":
-                rafs_scores = [self._recoverability_score(c, inference_data, frontier) for c in cluster]
-                best_idx = max(range(len(cluster)), key=lambda i: (rafs_scores[i], -i))
+                scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
+                best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
                 chosen = dict(cluster[best_idx])
-                consensus_log["rafs_scores"] = rafs_scores
-                consensus_log["rafs_pick"] = best_idx
+                consensus_log["checker_violation_scores"] = scores
+                consensus_log["checker_pick"] = best_idx
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
