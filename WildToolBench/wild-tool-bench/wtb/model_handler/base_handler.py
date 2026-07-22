@@ -531,13 +531,17 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
-    def _build_action_graph(self, tools, messages):
+    def _build_session_frontier(self, tools, messages):
         '''
-        SCAP v2 Stage 2 & Stage 3: Construct Executable Action Graph for all 
-        available OpenAPI tools and compute structural feasibility scores.
+        RAFS Component 1: Build the Session Frontier.
+        Extracts slot coverage across OpenAPI tools, unresolved required slots,
+        and current feasible tool families.
         '''
         ctx_text = json.dumps(messages, ensure_ascii=False).lower()
-        graphs = {}
+        slot_coverage = Counter()
+        unresolved_slots = set()
+        feasible_tools = set()
+
         for t in (tools or []):
             func = t.get("function", {})
             tname = func.get("name")
@@ -545,22 +549,81 @@ class BaseHandler:
                 continue
             params = func.get("parameters", {}) or {}
             req = set(params.get("required", []) or [])
-            known = {s for s in req if s.lower() in ctx_text}
-            missing = req - known
-            feasibility = 1.0 if len(req) == 0 else (len(known) / float(len(req)))
-            graphs[tname] = {
-                "required": req,
-                "known": known,
-                "missing": missing,
-                "feasibility": feasibility
-            }
-        return graphs
+            for slot in req:
+                slot_coverage[slot] += 1
+                if slot.lower() not in ctx_text:
+                    unresolved_slots.add(slot)
+            
+            missing = {s for s in req if s.lower() not in ctx_text}
+            if len(missing) == 0:
+                feasible_tools.add(tname)
+
+        return {
+            "slot_coverage": slot_coverage,
+            "unresolved_slots": unresolved_slots,
+            "feasible_tools": feasible_tools
+        }
+
+    def _recoverability_score(self, candidate, inference_data, frontier):
+        '''
+        RAFS Component 2: Compute candidate recoverability score.
+        Higher score = candidate leaves the session more recoverable.
+        Score = validity + grounding + frontier_coverage - penalties
+        '''
+        viol = float(self._candidate_violations(candidate, inference_data)["total"])
+        validity_bonus = 1.0 if viol == 0 else -1.0 * viol
+
+        tcalls = candidate.get("tool_calls") or []
+        ctx_text = json.dumps(inference_data.get("messages", []), ensure_ascii=False).lower()
+
+        grounding_bonus = 0.0
+        irreversibility_penalty = 0.0
+        invented_required_penalty = 0.0
+        frontier_coverage_bonus = 0.0
+
+        if tcalls:
+            total_args = 0
+            grounded_args = 0
+            for tc in tcalls:
+                tname = tc.get("function", {}).get("name")
+                args = tc.get("function", {}).get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                
+                # Check for speculative tool calls when required slots are missing
+                if tname not in frontier["feasible_tools"] and len(frontier["unresolved_slots"]) > 0:
+                    irreversibility_penalty += 1.0
+
+                if isinstance(args, dict):
+                    for k, v in args.items():
+                        total_args += 1
+                        val_str = str(v).lower()
+                        if val_str in ctx_text:
+                            grounded_args += 1
+                            # Check slot coverage bonus
+                            if k in frontier["slot_coverage"]:
+                                frontier_coverage_bonus += 0.1 * frontier["slot_coverage"][k]
+                        else:
+                            # Ungrounded argument check
+                            invented_required_penalty += 0.5
+
+            if total_args > 0:
+                grounding_bonus = 0.5 * (float(grounded_args) / float(total_args))
+        else:
+            # Text/Clarify candidate: if required slots are missing, clarify preserves frontier
+            if len(frontier["unresolved_slots"]) > 0:
+                frontier_coverage_bonus += 0.8
+
+        return validity_bonus + grounding_bonus + frontier_coverage_bonus - irreversibility_penalty - invented_required_penalty
 
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency (consensus) decoding with SCAP v2 Schema-Guided Commitment.
-        Draws sc_n candidates, constructs the Executable Action Graph, and reranks
-        candidates by log-likelihood and structural schema feasibility.
+        Self-consistency (consensus) decoding with RAFS (Recoverability-Aware Frontier Search).
+        Builds session frontier, evaluates candidate recoverability, and selects
+        the path that keeps the session most recoverable.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
@@ -588,10 +651,10 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        # SCAP v2 Stage 2 & 3: Construct Action Graph
+        # RAFS: Build Session Frontier
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
-        action_graph = self._build_action_graph(tools, messages)
+        frontier = self._build_session_frontier(tools, messages)
 
         if not vote_counts:
             chosen = anchor
@@ -601,26 +664,12 @@ class BaseHandler:
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # SCAP v2 Stage 4: Schema-Guided Commitment Score Reranking
-                def scap_commitment_score(sig):
+                # RAFS Reranking: Pick winning signature with highest recoverability score
+                def rafs_rank_score(sig):
                     clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                    best_score = 999.0
-                    for c in clust:
-                        viol = float(self._candidate_violations(c, inference_data)["total"])
-                        tcalls = c.get("tool_calls") or []
-                        feas_list = []
-                        if tcalls:
-                            for tc in tcalls:
-                                tname = tc.get("function", {}).get("name")
-                                feas_list.append(action_graph.get(tname, {}).get("feasibility", 0.5))
-                        avg_feas = sum(feas_list) / float(len(feas_list)) if feas_list else 1.0
-                        # SCAP Commitment Score: lower defects + higher feasibility = better (lower score)
-                        score = viol - (0.4 * avg_feas)
-                        if score < best_score:
-                            best_score = score
-                    return best_score
+                    return max(self._recoverability_score(c, inference_data, frontier) for c in clust)
 
-                winning_signature = min(winners, key=scap_commitment_score)
+                winning_signature = max(winners, key=rafs_rank_score)
 
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
@@ -628,11 +677,11 @@ class BaseHandler:
 
             chosen = dict(cluster[0])
             if winning_signature[0] == "tools":
-                scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
-                best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
+                rafs_scores = [self._recoverability_score(c, inference_data, frontier) for c in cluster]
+                best_idx = max(range(len(cluster)), key=lambda i: (rafs_scores[i], -i))
                 chosen = dict(cluster[best_idx])
-                consensus_log["checker_violation_scores"] = scores
-                consensus_log["checker_pick"] = best_idx
+                consensus_log["rafs_scores"] = rafs_scores
+                consensus_log["rafs_pick"] = best_idx
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
