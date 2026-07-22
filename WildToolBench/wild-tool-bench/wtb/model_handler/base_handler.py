@@ -221,15 +221,21 @@ class BaseHandler:
             return True
         return value.strip()[:10] in candidates
 
-    def _is_grounded(self, value, context_text):
+    def _is_grounded(self, value, context_text, key_name=None):
         '''
         A value is grounded if it is traceable to something already visible
         to the model: quoted verbatim from the conversation/Ledger (QUOTE /
         RESOLVE), or shaped like a resolved date/time (COMPUTE). Container
         values are grounded only if every leaf value inside them is.
         '''
-        if isinstance(value, bool) or value is None:
+        if value is None:
             return True
+        if isinstance(value, bool):
+            # A boolean is only grounded if its key or boolean context is
+            # mentioned in the conversation text, or if it is required by schema.
+            if key_name and _normalize_str(key_name) in _normalize_str(context_text):
+                return True
+            return False
         if isinstance(value, (int, float)):
             if str(value) in context_text:
                 return True
@@ -238,17 +244,9 @@ class BaseHandler:
             if not value.strip():
                 return True
             if self._DATE_RECEIPT_RE.match(value.strip()):
-                # Permissive on purpose: stripping is irreversible, and the
-                # phrase parser cannot cover every date expression. Candidate
-                # verification lives in _candidate_violations, which strips
-                # nothing and only steers selection and repair.
                 return True
             if value in context_text:
                 return True
-            # Normalized fallback: benchmark values often differ from the
-            # conversation only in spacing/case ("LasVegas" vs "Las Vegas").
-            # Dry-run on 1024 recorded turns: same net accuracy as strict
-            # matching with a third fewer falsely-stripped correct calls.
             normalized = _normalize_str(value)
             return bool(normalized) and normalized in _normalize_str(context_text)
         if isinstance(value, (list, dict)):
@@ -265,7 +263,7 @@ class BaseHandler:
                     leaves.append(v)
 
             collect(value)
-            return all(self._is_grounded(leaf, context_text) for leaf in leaves)
+            return all(self._is_grounded(leaf, context_text, key_name) for leaf in leaves)
         return True
 
     def _verify_and_filter_arguments(self, tool_name, arguments_dict, tools, context_text):
@@ -289,7 +287,7 @@ class BaseHandler:
         dropped_keys = []
         ungrounded_required = []
         for key, value in arguments_dict.items():
-            grounded = self._is_grounded(value, context_text)
+            grounded = self._is_grounded(value, context_text, key_name=key)
             if key in required:
                 kept[key] = value
                 if not grounded:
