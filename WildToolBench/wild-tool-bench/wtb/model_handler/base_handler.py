@@ -634,6 +634,14 @@ class BaseHandler:
         else:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
+
+            # Structural Exclusion Hard Gate (MCSG Refinement)
+            if mcsg_state["action_class"] == "under_specified":
+                # Exclude plain text signatures when required slots are missing
+                filtered_winners = [s for s in winners if s != ("text",)]
+                if filtered_winners:
+                    winners = filtered_winners
+
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
