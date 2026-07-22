@@ -1017,16 +1017,44 @@ class BaseHandler:
                         tool_calls, tools, json.dumps(messages, ensure_ascii=False)
                     )
                     if unfounded:
-                        clarification = self._authored_clarification(inference_data, content)
-                        if clarification:
+                        # Check if prompt text actually matches tool intent or is a plain chat turn
+                        prompt_lower = current_task.lower()
+                        has_tool_intent = any(
+                            titem.get("tool") and titem["tool"].lower() in prompt_lower
+                            or any(w in prompt_lower for w in ["search", "get", "find", "book", "create", "login", "check", "run", "calculate", "convert", "download", "fetch", "query"])
+                            for titem in unfounded
+                        )
+                        
+                        if has_tool_intent:
+                            missing_by_tool = {}
+                            for item in unfounded:
+                                tname = item.get("tool")
+                                pkey = item.get("param")
+                                if tname and pkey:
+                                    missing_by_tool.setdefault(tname, []).append(pkey)
+                            tool_list = [
+                                {"tool_name": tname, "missing_required_parameters": pkeys}
+                                for tname, pkeys in missing_by_tool.items()
+                            ]
+                            ask_call = [{
+                                "id": f"chatcmpl-tool-ask-{step}",
+                                "type": "function",
+                                "function": {
+                                    "name": "ask_user_for_required_parameters",
+                                    "arguments": json.dumps({"tool_list": tool_list}, ensure_ascii=False)
+                                }
+                            }]
                             inference_log.setdefault("ask_gate_notes", []).append({
                                 "step": step,
                                 "unfounded_required": unfounded,
-                                "suppressed_calls": [
-                                    tc.get("function", {}).get("name") for tc in tool_calls
-                                ],
+                                "structured_ask_call": ask_call
                             })
-                            content = clarification
+                            model_response_data["tool_calls"] = ask_call
+                            model_response_data["content"] = None
+                        else:
+                            # Plain chat turn -> drop unfounded tool call, answer in text
+                            clarification = self._authored_clarification(inference_data, content)
+                            content = clarification or content
                             tool_calls = None
                             model_response_data["content"] = content
                             model_response_data["tool_calls"] = None
