@@ -926,7 +926,7 @@ class BaseHandler:
             })
         facts = self._extract_observation_facts(history_answer_lists)
         if facts:
-            fact_str = "\n".join(f"- {f}" for f in facts[:20])
+            fact_str = "\n".join(f"- {f}" for f in facts[:40])
             messages.append({
                 "role": "system",
                 "content": "Surfaced Observation Facts (use directly for referential ID binding):\n" + fact_str
