@@ -1019,8 +1019,11 @@ class BaseHandler:
                     if unfounded:
                         # Group missing required parameters by tool name
                         missing_by_tool = {}
-                        for tname, pkey in unfounded:
-                            missing_by_tool.setdefault(tname, []).append(pkey)
+                        for item in unfounded:
+                            tname = item.get("tool")
+                            pkey = item.get("param")
+                            if tname and pkey:
+                                missing_by_tool.setdefault(tname, []).append(pkey)
                         tool_list = [
                             {"tool_name": tname, "missing_required_parameters": pkeys}
                             for tname, pkeys in missing_by_tool.items()
