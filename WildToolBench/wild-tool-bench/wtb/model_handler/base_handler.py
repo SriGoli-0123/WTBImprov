@@ -1017,41 +1017,16 @@ class BaseHandler:
                         tool_calls, tools, json.dumps(messages, ensure_ascii=False)
                     )
                     if unfounded:
-                        # Pure OpenAPI Schema Validation (Zero Word Lists):
-                        # Verify candidate tool is a valid member of available OpenAPI tools schema
-                        valid_tools = {t.get("function", {}).get("name") for t in tools if t.get("function", {}).get("name")}
-                        has_tool_intent = any(item.get("tool") in valid_tools for item in unfounded)
-                        
-                        if has_tool_intent:
-                            missing_by_tool = {}
-                            for item in unfounded:
-                                tname = item.get("tool")
-                                pkey = item.get("param")
-                                if tname and pkey:
-                                    missing_by_tool.setdefault(tname, []).append(pkey)
-                            tool_list = [
-                                {"tool_name": tname, "missing_required_parameters": pkeys}
-                                for tname, pkeys in missing_by_tool.items()
-                            ]
-                            ask_call = [{
-                                "id": f"chatcmpl-tool-ask-{step}",
-                                "type": "function",
-                                "function": {
-                                    "name": "ask_user_for_required_parameters",
-                                    "arguments": json.dumps({"tool_list": tool_list}, ensure_ascii=False)
-                                }
-                            }]
+                        clarification = self._authored_clarification(inference_data, content)
+                        if clarification:
                             inference_log.setdefault("ask_gate_notes", []).append({
                                 "step": step,
                                 "unfounded_required": unfounded,
-                                "structured_ask_call": ask_call
+                                "suppressed_calls": [
+                                    tc.get("function", {}).get("name") for tc in tool_calls
+                                ],
                             })
-                            model_response_data["tool_calls"] = ask_call
-                            model_response_data["content"] = None
-                        else:
-                            # Plain chat turn -> drop unfounded tool call, answer in text
-                            clarification = self._authored_clarification(inference_data, content)
-                            content = clarification or content
+                            content = clarification
                             tool_calls = None
                             model_response_data["content"] = content
                             model_response_data["tool_calls"] = None
