@@ -1017,32 +1017,19 @@ class BaseHandler:
                         tool_calls, tools, json.dumps(messages, ensure_ascii=False)
                     )
                     if unfounded:
-                        # Group missing required parameters by tool name
-                        missing_by_tool = {}
-                        for item in unfounded:
-                            tname = item.get("tool")
-                            pkey = item.get("param")
-                            if tname and pkey:
-                                missing_by_tool.setdefault(tname, []).append(pkey)
-                        tool_list = [
-                            {"tool_name": tname, "missing_required_parameters": pkeys}
-                            for tname, pkeys in missing_by_tool.items()
-                        ]
-                        ask_call = [{
-                            "id": f"chatcmpl-tool-ask-{step}",
-                            "type": "function",
-                            "function": {
-                                "name": "ask_user_for_required_parameters",
-                                "arguments": json.dumps({"tool_list": tool_list}, ensure_ascii=False)
-                            }
-                        }]
-                        inference_log.setdefault("ask_gate_notes", []).append({
-                            "step": step,
-                            "unfounded_required": unfounded,
-                            "structured_ask_call": ask_call
-                        })
-                        model_response_data["tool_calls"] = ask_call
-                        model_response_data["content"] = None
+                        clarification = self._authored_clarification(inference_data, content)
+                        if clarification:
+                            inference_log.setdefault("ask_gate_notes", []).append({
+                                "step": step,
+                                "unfounded_required": unfounded,
+                                "suppressed_calls": [
+                                    tc.get("function", {}).get("name") for tc in tool_calls
+                                ],
+                            })
+                            content = clarification
+                            tool_calls = None
+                            model_response_data["content"] = content
+                            model_response_data["tool_calls"] = None
             input_token = model_response_data["input_token"]
             output_token = model_response_data["output_token"]
             latency.append(query_latency)
