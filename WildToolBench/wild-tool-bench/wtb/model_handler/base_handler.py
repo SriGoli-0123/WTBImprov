@@ -809,21 +809,32 @@ class BaseHandler:
         '''
         if not history_answer_lists:
             return []
-        # entity -> ordered set of descriptive labels, merged across turns so a
-        # later, richer observation enriches the same id instead of duplicating it.
+        # (key, value) -> position label. Values that came from an ordered list
+        # of objects keep the 1-based index of the element they belong to; the
+        # first sighting of a value wins so a value repeated later does not lose
+        # its original position.
         entities = {}
-        def walk(obj):
+
+        def walk(obj, position=""):
             if isinstance(obj, dict):
                 for k, v in obj.items():
                     if isinstance(v, (str, int, float)) and not isinstance(v, bool):
                         s_v = str(v).strip()
                         if s_v:
-                            entities[(k, s_v)] = None
+                            entities.setdefault((k, s_v), position)
                     elif isinstance(v, (dict, list)):
-                        walk(v)
+                        walk(v, position)
             elif isinstance(obj, list):
-                for item in obj:
-                    walk(item)
+                # An ordered list of objects is exactly what the user points at
+                # when they say "the first" / "the last two" / "the sixth", so
+                # number its elements. Scalar lists carry no such handle.
+                records = [item for item in obj if isinstance(item, dict)]
+                if len(records) > 1:
+                    for idx, item in enumerate(records, start=1):
+                        walk(item, f"[{idx}] ")
+                else:
+                    for item in obj:
+                        walk(item, position)
 
         for answer_list in history_answer_lists:
             for ans in answer_list:
@@ -831,7 +842,7 @@ class BaseHandler:
                 if obs:
                     walk(obs)
 
-        return [f"{k}: {s_v}" for (k, s_v) in entities.keys()]
+        return [f"{position}{k}: {s_v}" for (k, s_v), position in entities.items()]
 
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
