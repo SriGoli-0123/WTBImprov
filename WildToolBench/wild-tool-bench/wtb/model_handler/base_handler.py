@@ -473,6 +473,32 @@ class BaseHandler:
             })
         return recovered or None
 
+    def _topological_sort_tool_calls(self, tool_calls, tools):
+        '''
+        Topological Tool Dependency Ordering (IGAR v10).
+        If tool call B requires a parameter property produced by tool A,
+        sort tool A before tool B in the execution sequence.
+        '''
+        if not tool_calls or len(tool_calls) <= 1:
+            return tool_calls
+        schema_map = {t.get("function", {}).get("name"): t.get("function", {}) for t in (tools or [])}
+        def depends_on(tc1, tc2):
+            name1 = tc1.get("function", {}).get("name")
+            name2 = tc2.get("function", {}).get("name")
+            if not name1 or not name2 or name1 == name2:
+                return False
+            f1 = schema_map.get(name1, {})
+            req1 = set(f1.get("parameters", {}).get("required", []))
+            name2_lower = name2.lower()
+            return any(req_key.lower() in name2_lower for req_key in req1)
+        sorted_calls = list(tool_calls)
+        n = len(sorted_calls)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if depends_on(sorted_calls[i], sorted_calls[j]):
+                    sorted_calls[i], sorted_calls[j] = sorted_calls[j], sorted_calls[i]
+        return sorted_calls
+
     def _normalize_response(self, data):
         '''
         Rescue tool calls that came back as text because the server-side parser
@@ -999,7 +1025,7 @@ class BaseHandler:
                     except Exception as e:
                         print(f"Cleaner error: {e}", flush=True)
                     cleaned_tool_calls.append(tc)
-                tool_calls = cleaned_tool_calls
+                tool_calls = self._topological_sort_tool_calls(cleaned_tool_calls, tools)
                 model_response_data["tool_calls"] = tool_calls
 
                 # Ask-instead-of-guess: if a REQUIRED value was invented rather
