@@ -278,7 +278,7 @@ class BaseHandler:
                     ungrounded_required.append(key)
             elif grounded:
                 kept[key] = value
-            elif self._is_intent_argument(key, value, properties.get(key)):
+            elif self._is_intent_argument(key, value, properties.get(key), context_text):
                 # Ungrounded, but of a kind that literal grounding cannot see:
                 # kept deliberately (see _is_intent_argument).
                 kept[key] = value
@@ -287,7 +287,33 @@ class BaseHandler:
         return kept, dropped_keys, ungrounded_required
 
     @staticmethod
-    def _is_intent_argument(key, value, prop_schema):
+    def _is_abbreviation_of_context(value, context_text):
+        '''
+        Is this value DERIVED from the conversation rather than invented?
+
+        A contraction the model resolved itself ("Phoenix" -> "PHX", "China" ->
+        "CN", "English" -> "en") cannot be quoted verbatim, but its characters
+        still appear, in order, inside a longer word that IS present. An
+        invented value has no such source word.
+
+        Parameter-free by construction: it compares the value against the
+        conversation's own vocabulary, so there is no length constant or tuned
+        threshold. A short value naturally finds a source word and is forgiven;
+        a long fabricated one does not.
+        '''
+        target = re.sub(r"[^a-z0-9]", "", str(value).lower())
+        if not target:
+            return True
+        for word in set(re.findall(r"[A-Za-z0-9]+", context_text or "")):
+            lowered = word.lower()
+            if len(lowered) <= len(target):
+                continue
+            cursor = iter(lowered)
+            if all(char in cursor for char in target):
+                return True
+        return False
+
+    def _is_intent_argument(self, key, value, prop_schema, context_text=""):
         '''
         Guard against over-dropping by the receipt gate.
 
@@ -300,8 +326,8 @@ class BaseHandler:
                         never data, so they can never appear verbatim;
           * numerics  - counts/radii/limits are usually computed or restated
                         rather than copied character-for-character;
-          * short codes (<= 3 chars) - semantic mappings the model resolves
-                        itself ("China" -> "CN", "English" -> "en").
+          * contractions of something in the conversation - see
+                        _is_abbreviation_of_context.
 
         Enum-typed arguments are deliberately NOT protected: measured on the
         clean_demo run, dropping ungrounded enums is right 11 times and wrong 3,
@@ -314,8 +340,8 @@ class BaseHandler:
             return True
         if isinstance(value, (int, float)):
             return True
-        if isinstance(value, str) and 0 < len(value.strip()) <= 3:
-            return True
+        if isinstance(value, str) and value.strip():
+            return self._is_abbreviation_of_context(value, context_text)
         return False
 
     def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
@@ -817,12 +843,6 @@ class BaseHandler:
             cards.append(card)
         return cards
 
-    # A required value shorter than this is treated as a semantic mapping the
-    # model resolved itself ("Phoenix" -> "PHX", "China" -> "CN"), not a
-    # fabrication. Measured: raising the floor from 0 to 4 chars cut the
-    # would-break count from 10 to 5 while keeping 40 of 42 catches.
-    _ASK_MIN_LEN = 4
-
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
         Receipts for REQUIRED arguments.
@@ -834,9 +854,11 @@ class BaseHandler:
         back to the user instead of acting on a guess.
 
         Deliberately narrow - a value is only "unfounded" if it is a plain string
-        of at least _ASK_MIN_LEN characters, not a resolved date (computed from
-        Current Date, so legitimately absent upstream), not a container, and not
-        numeric/boolean. Those kinds are unquotable by nature, not invented.
+        that is not a resolved date (computed from Current Date, so legitimately
+        absent upstream), not a container, not numeric/boolean, and not a
+        contraction of a word the conversation already contains (see
+        _is_abbreviation_of_context). Those kinds are unquotable by nature
+        rather than invented.
         '''
         schemas = {}
         for t in tools:
@@ -865,13 +887,14 @@ class BaseHandler:
                 if value is None or isinstance(value, (dict, list, bool, int, float)):
                     continue
                 text = str(value).strip()
-                if len(text) < self._ASK_MIN_LEN:
-                    continue
                 if self._DATE_RECEIPT_RE.match(text):
                     continue
                 normalized = _normalize_str(text)
-                if normalized and normalized not in normalized_ctx:
-                    hits.append({"tool": name, "param": key, "value": text})
+                if not normalized or normalized in normalized_ctx:
+                    continue
+                if self._is_abbreviation_of_context(text, context_text):
+                    continue
+                hits.append({"tool": name, "param": key, "value": text})
         return hits
 
     def _authored_clarification(self, inference_data, content):
