@@ -69,6 +69,15 @@ class BaseHandler:
         self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
+        if isinstance(arguments_dict, str):
+            try:
+                parsed = json.loads(arguments_dict)
+                arguments_dict = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                arguments_dict = {}
+        elif not isinstance(arguments_dict, dict):
+            arguments_dict = {}
+
         # Find the tool schema
         schema = None
         for t in tools:
