@@ -717,6 +717,31 @@ class BaseHandler:
             rows.append("\n".join(lines))
         return "\n\n".join(rows)
 
+    def _extract_observation_facts(self, history_answer_lists):
+        if not history_answer_lists:
+            return []
+        facts = []
+
+        def collect(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, (str, int, float)) and v:
+                        s_v = str(v).strip()
+                        if len(s_v) >= 3 and (k.lower().endswith("id") or k.lower().endswith("code") or k.lower().endswith("number")):
+                            facts.append(f"{k}: {s_v}")
+                    else:
+                        collect(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    collect(item)
+
+        for answer_list in history_answer_lists:
+            for ans in answer_list:
+                obs = ans.get("observation")
+                if obs:
+                    collect(obs)
+        return list(dict.fromkeys(facts))
+
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
         messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
         ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
@@ -725,6 +750,13 @@ class BaseHandler:
                 "role": "system",
                 "content": "Ledger - verified record of this session's prior turns "
                            "(task -> action taken -> result -> how it closed):\n\n" + ledger,
+            })
+        facts = self._extract_observation_facts(history_answer_lists)
+        if facts:
+            fact_str = "\n".join(f"- {f}" for f in facts[:20])
+            messages.append({
+                "role": "system",
+                "content": "Surfaced Observation Facts (use directly for referential ID binding):\n" + fact_str
             })
         messages.append({"role": "user", "content": current_task})
         return messages
