@@ -770,7 +770,14 @@ class BaseHandler:
                     else:
                         args_str = json.dumps(action["arguments"], ensure_ascii=False)
                         lines.append(f"     -> {name}({args_str})")
-                        lines.append(f"        => {self._render_observation(observation)}")
+                        obs_str = self._render_observation(observation)
+                        # IGAR v11 Terminal Salience Memory (TSM):
+                        # On late turns (Turn 3+), compress intermediate observation blobs from earlier turns if large,
+                        # relying on Surfaced Observation Facts for exact ID binding.
+                        if len(history_tasks) >= 3 and turn_idx < len(history_tasks) and len(obs_str) > 200:
+                            lines.append(f"        => [observation recorded in Surfaced Facts]")
+                        else:
+                            lines.append(f"        => {obs_str}")
             rows.append("\n".join(lines))
         return "\n\n".join(rows)
 
