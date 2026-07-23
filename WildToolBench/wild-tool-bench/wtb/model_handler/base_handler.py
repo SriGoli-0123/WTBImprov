@@ -1054,7 +1054,7 @@ class BaseHandler:
             "clarify_slot": clarify_slot
         }
 
-    def _unfounded_required(self, tool_calls, tools, context_text):
+    def _unfounded_required(self, tool_calls, tools, context_text, dialogue_state=None):
         '''
         Receipts for REQUIRED arguments.
 
@@ -1095,6 +1095,8 @@ class BaseHandler:
                 continue
             for key in required:
                 value = args.get(key)
+                if self._is_grounded(value, context_text, key_name=key, dialogue_state=dialogue_state):
+                    continue
                 if value is None or isinstance(value, (dict, list, bool, int, float)):
                     continue
                 text = str(value).strip()
