@@ -531,15 +531,68 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
+    def _build_dialogue_provenance_context(self, messages, tools=None):
+        '''
+        Dialogue Provenance Grounding (DPG) Context Builder.
+        
+        Indexes full dialogue state provenance across 4 distinct layers:
+          1. Current User Turn (User_Current)
+          2. Prior Conversation History (User_History, Assistant_History)
+          3. Tool Observations (Tool_Observation JSON payloads, keys, values, and ledger facts)
+          4. System / Environment Context (System_Environment dates and computed values)
+        '''
+        raw_text_ctx = json.dumps(messages or [], ensure_ascii=False).lower()
+        provenance_keys = set()
+        provenance_tokens = set()
+
+        for msg in (messages or []):
+            role = msg.get("role", "")
+            content = msg.get("content")
+            if not content:
+                continue
+            
+            if isinstance(content, str):
+                for token in re.findall(r'[a-zA-Z0-9_\-]+', content.lower()):
+                    provenance_tokens.add(token)
+
+            if role == "tool":
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                    def index_payload(obj):
+                        if isinstance(obj, dict):
+                            for k, v in obj.items():
+                                provenance_keys.add(str(k).lower())
+                                index_payload(v)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                index_payload(item)
+                        elif obj is not None:
+                            val_str = str(obj).strip().lower()
+                            if val_str:
+                                provenance_tokens.add(val_str)
+                                for token in re.findall(r'[a-zA-Z0-9_\-]+', val_str):
+                                    provenance_tokens.add(token)
+                    index_payload(payload)
+                except Exception:
+                    pass
+
+        return {
+            "raw_text_ctx": raw_text_ctx,
+            "provenance_keys": provenance_keys,
+            "provenance_tokens": provenance_tokens
+        }
+
     def _minimum_commitment_gate(self, tools, messages):
         '''
-        MCSG Core Component: Minimum-Commitment Schema Gate.
-        Computes pre-generation action class before candidate commitment:
-          1. 'grounded_tool': Tool path has 100% required parameters grounded.
-          2. 'under_specified': Required parameter missing. Returns highest-coverage missing slot.
-          3. 'ambiguous_chat': No tool intent grounded -> Chat mode.
+        Dialogue Provenance Grounding (DPG) Minimum-Commitment Schema Gate.
+        Evaluates slot grounding against the complete Dialogue Provenance Context
+        (current prompt + prior history + tool observations + ledger facts).
         '''
-        ctx_text = json.dumps(messages, ensure_ascii=False).lower()
+        dpg_ctx = self._build_dialogue_provenance_context(messages, tools)
+        ctx_text = dpg_ctx["raw_text_ctx"]
+        prov_keys = dpg_ctx["provenance_keys"]
+        prov_tokens = dpg_ctx["provenance_tokens"]
+
         slot_coverage = Counter()
         tool_status = {}
 
@@ -553,7 +606,18 @@ class BaseHandler:
             for slot in req:
                 slot_coverage[slot] += 1
 
-            missing = {s for s in req if s.lower() not in ctx_text}
+            missing = set()
+            for slot in req:
+                slot_lower = slot.lower()
+                is_grounded = (
+                    slot_lower in ctx_text or
+                    slot_lower in prov_keys or
+                    slot_lower in prov_tokens or
+                    self._is_abbreviation_of_context(slot, ctx_text)
+                )
+                if not is_grounded:
+                    missing.add(slot)
+
             tool_status[tname] = {
                 "required": req,
                 "missing": missing,
@@ -916,27 +980,25 @@ class BaseHandler:
 
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
-        Receipts for REQUIRED arguments.
+        Receipts for REQUIRED arguments with Dialogue Provenance Grounding (DPG).
 
-        The receipt gate already drops optional arguments that cannot be traced
-        to the conversation, but required ones are always kept (the schema wins).
-        That leaves the case where the model invents the one value it was
-        supposed to ask for. This reports those, so the caller can hand the turn
-        back to the user instead of acting on a guess.
-
-        Deliberately narrow - a value is only "unfounded" if it is a plain string
-        that is not a resolved date (computed from Current Date, so legitimately
-        absent upstream), not a container, not numeric/boolean, and not a
-        contraction of a word the conversation already contains (see
-        _is_abbreviation_of_context). Those kinds are unquotable by nature
-        rather than invented.
+        Deliberately narrow - a value is only "unfounded" if its Provenance is None
+        (not present in current user text, prior conversation, tool observation payloads,
+        or system date/math context).
         '''
         schemas = {}
         for t in tools:
             func = t.get("function", {})
             if func.get("name"):
                 schemas[func["name"]] = func
+
         normalized_ctx = _normalize_str(context_text)
+        
+        # Build token set from context_text to catch values inside escaped JSON/observations
+        provenance_tokens = set()
+        for token in re.findall(r'[a-zA-Z0-9_\-]+', context_text.lower()):
+            provenance_tokens.add(token)
+
         hits = []
         for tc in tool_calls or []:
             func = tc.get("function", {})
@@ -961,11 +1023,18 @@ class BaseHandler:
                 if self._DATE_RECEIPT_RE.match(text):
                     continue
                 normalized = _normalize_str(text)
-                if not normalized or normalized in normalized_ctx:
-                    continue
-                if self._is_abbreviation_of_context(text, context_text):
-                    continue
-                hits.append({"tool": name, "param": key, "value": text})
+                text_lower = text.lower()
+                
+                # Check Dialogue Provenance across raw ctx, normalized ctx, token sets, and abbreviations
+                is_grounded = (
+                    not normalized or
+                    normalized in normalized_ctx or
+                    text_lower in normalized_ctx or
+                    text_lower in provenance_tokens or
+                    self._is_abbreviation_of_context(text, context_text)
+                )
+                if not is_grounded:
+                    hits.append({"tool": name, "param": key, "value": text})
         return hits
 
     def _authored_clarification(self, inference_data, content):
