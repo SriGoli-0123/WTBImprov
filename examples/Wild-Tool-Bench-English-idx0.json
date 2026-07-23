@@ -1,0 +1,484 @@
+{
+  "id": "wild_tool_bench_0",
+  "env_info": "2024-07-11 22:11:58 Thursday",
+  "tools": [
+    {
+      "function": {
+        "description": "Get the real-time weather conditions of a specified city.",
+        "name": "getRealtimeCity",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data, supporting 'XML', 'CSV', 'JSON', and the default is 'JSON'.",
+              "type": "string"
+            }
+          },
+          "required": ["city"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get historical weather data for a specified city.",
+        "name": "getHistoricalCity",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "endDate": {
+              "description": "The end date, in the format 'YYYY-MM-DD'.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data, supports 'XML', 'CSV', 'JSON', default is 'JSON'.",
+              "type": "string"
+            },
+            "startDate": {
+              "description": "The start date, in the format 'YYYY-MM-DD'.",
+              "type": "string"
+            }
+          },
+          "required": ["city", "startDate", "endDate"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the future weather forecast for a specified city.",
+        "name": "getCityForecast",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "endDate": {
+              "description": "The end date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data, supporting 'XML', 'CSV', 'JSON', default is 'JSON'.",
+              "type": "string"
+            },
+            "startDate": {
+              "description": "The start date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            }
+          },
+          "required": ["city"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the real-time Air Quality Index (AQI) data for a specified city.",
+        "name": "getRealtimeCityAQI",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data. Supports 'XML', 'CSV', 'JSON'. The default is 'JSON'.",
+              "type": "string"
+            }
+          },
+          "required": ["city"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the historical air quality index (AQI) data for a specified city.",
+        "name": "getHistoricalCityAQI",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "endDate": {
+              "description": "The end date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data, supporting 'XML', 'CSV', 'JSON', default is 'JSON'.",
+              "type": "string"
+            },
+            "startDate": {
+              "description": "The start date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            }
+          },
+          "required": ["city", "startDate", "endDate"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the future air quality forecast for a specified city.",
+        "name": "getCityAQIForecast",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "endDate": {
+              "description": "The end date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            },
+            "format": {
+              "description": "The format of the returned data, supporting 'XML', 'CSV', 'JSON', with the default being 'JSON'.",
+              "type": "string"
+            },
+            "startDate": {
+              "description": "The start date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            }
+          },
+          "required": ["city"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the performance events in the specified city.",
+        "name": "getCityShow",
+        "parameters": {
+          "properties": {
+            "city": {
+              "description": "The name of the city.",
+              "type": "string"
+            },
+            "endDate": {
+              "description": "The end date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            },
+            "startDate": {
+              "description": "The start date, in the format of 'YYYY-MM-DD'.",
+              "type": "string"
+            }
+          },
+          "required": ["city", "startDate", "endDate"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Get the detailed information of the specified performance event.",
+        "name": "getShowDetail",
+        "parameters": {
+          "properties": {
+            "activity_id": {
+              "description": "Activity ID.",
+              "type": "string"
+            }
+          },
+          "required": ["activity_id"],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "tasks": [
+    "I want to travel to other places this weekend. Please help me check the weather in Chicago for the two days of the weekend.",
+    "It doesn't look so good. Please help me check Las Vegas again?",
+    "Check the air quality as well. If it's good, then check what special performances are on those two days.",
+    "Where is the specific location?"
+  ],
+  "messages": [
+    {
+      "content": "I want to travel to other places this weekend. Please help me check the weather in Chicago for the two days of the weekend.",
+      "role": "user"
+    },
+    {
+      "content": "### Weekend Weather Forecast for Chicago\n\n- **July 13, 2024**\n  - Weather: Light rain\n  - Temperature: High 25°C, Low 18°C\n  - Humidity: 80%\n\n- **July 14, 2024**\n  - Weather: Moderate rain\n  - Temperature: High 23°C, Low 17°C\n  - Humidity: 85%\n\nPlease arrange your travel plans reasonably according to the weather conditions!",
+      "role": "assistant"
+    },
+    "============================================================",
+    {
+      "content": "It doesn't look so good. Please help me check Las Vegas again?",
+      "role": "user"
+    },
+    {
+      "content": "On July 13, 2024, the weather in Las Vegas was sunny, with a maximum temperature of 30°C and a minimum temperature of 20°C. On July 14, 2024, the weather was cloudy, with a maximum temperature of 28°C and a minimum temperature of 18°C.",
+      "role": "assistant"
+    },
+    "============================================================",
+    {
+      "content": "Check the air quality as well. If it's good, then check what special performances are on those two days.",
+      "role": "user"
+    },
+    {
+      "content": "### Las Vegas Weekend Air Quality\n\n- **2024-07-13**: AQI 45, the air quality is good.\n- **2024-07-14**: AQI 50, the air quality is good.\n\n### Las Vegas Weekend Special Performances\n\n1. **Cirque du Soleil**\n   - Date: 2024-07-13\n- Location: MGM Grand\n   - Time: 19:00\n   - Description: A thrilling and artistic circus show suitable for the whole family.\n\n2. **David Copperfield Magic Show**\n   - Date: 2024-07-14\n   - Location: MGM Grand\n   - Time: 21:00\n   - Description: David Copperfield's classic magic show is breathtaking.\n\nHope this information can help you plan a pleasant weekend trip!",
+      "role": "assistant"
+    },
+    "============================================================",
+    {
+      "content": "Where is the specific location?",
+      "role": "user"
+    },
+    {
+      "content": "The MGM Grand is located in Las Vegas, Nevada, USA. The specific address is: 3799 South Las Vegas Boulevard, Las Vegas, NV 89109. It is situated on the famous Las Vegas Strip and is one of the most well-known hotels and casinos in the city.",
+      "role": "assistant"
+    },
+    "============================================================"
+  ],
+  "answer_list": [
+    [
+      {
+        "action": {
+          "arguments": {
+            "city": "Chicago",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "name": "getCityForecast"
+        },
+        "dependency_list": [],
+        "idx": 0,
+        "observation": {
+          "response": {
+            "forecast": [
+              {
+                "date": "2024-07-13",
+                "humidity": "80%",
+                "temperature": {
+                  "high": "25°C",
+                  "low": "18°C"
+                },
+                "weather": "Light rain"
+              },
+              {
+                "date": "2024-07-14",
+                "humidity": "85%",
+                "temperature": {
+                  "high": "23°C",
+                  "low": "17°C"
+                },
+                "weather": "Moderate rain"
+              }
+            ]
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "name": "prepare_to_answer"
+        },
+        "dependency_list": [0],
+        "idx": 1,
+        "observation": "### Weekend Weather Forecast for Chicago\n\n- **July 13, 2024**\n  - Weather: Light rain\n  - Temperature: High 25°C, Low 18°C\n  - Humidity: 80%\n\n- **July 14, 2024**\n  - Weather: Moderate rain\n  - Temperature: High 23°C, Low 17°C\n  - Humidity: 85%\n\nPlease arrange your travel plans reasonably according to the weather conditions!"
+      }
+    ],
+    [
+      {
+        "action": {
+          "arguments": {
+            "city": "Las Vegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "name": "getCityForecast"
+        },
+        "dependency_list": [],
+        "idx": 0,
+        "observation": {
+          "response": {
+            "city": "Las Vegas",
+            "forecast": [
+              {
+                "date": "2024-07-13",
+                "temperature": {
+                  "high": "30°C",
+                  "low": "20°C"
+                },
+                "weather": "Sunny"
+              },
+              {
+                "date": "2024-07-14",
+                "temperature": {
+                  "high": "28°C",
+                  "low": "18°C"
+                },
+                "weather": "Cloudy"
+              }
+            ]
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "name": "prepare_to_answer"
+        },
+        "dependency_list": [0],
+        "idx": 1,
+        "observation": "On July 13, 2024, the weather in Las Vegas was sunny, with a maximum temperature of 30°C and a minimum temperature of 20°C. On July 14, 2024, the weather was cloudy, with a maximum temperature of 28°C and a minimum temperature of 18°C."
+      }
+    ],
+    [
+      {
+        "action": {
+          "arguments": {
+            "city": "Las Vegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "name": "getCityAQIForecast"
+        },
+        "dependency_list": [],
+        "idx": 0,
+        "observation": {
+          "response": {
+            "city": "Las Vegas",
+            "forecast": [
+              {
+                "aqi": 45,
+                "category": "Good",
+                "date": "2024-07-13"
+              },
+              {
+                "aqi": 50,
+                "category": "Good",
+                "date": "2024-07-14"
+              }
+            ]
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "city": "LasVegas",
+            "endDate": "2024-07-14",
+            "startDate": "2024-07-13"
+          },
+          "name": "getCityShow"
+        },
+        "dependency_list": [0],
+        "idx": 1,
+        "observation": {
+          "response": {
+            "city": "Las Vegas",
+            "shows": [
+              {
+                "activity_id": "show123",
+                "date": "2024-07-13",
+                "name": "Cirque du Soleil"
+              },
+              {
+                "activity_id": "show456",
+                "date": "2024-07-14",
+                "name": "David Copperfield Magic Show"
+              }
+            ]
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "activity_id": "show123"
+          },
+          "name": "getShowDetail"
+        },
+        "dependency_list": [1],
+        "idx": 2,
+        "observation": {
+          "response": {
+            "activity_id": "show123",
+            "description": "A thrilling and artistic circus show suitable for the whole family.",
+            "location": "MGM Grand",
+            "name": "Cirque du Soleil",
+            "time": "19:00"
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "activity_id": "show456"
+          },
+          "name": "getShowDetail"
+        },
+        "dependency_list": [1],
+        "idx": 3,
+        "observation": {
+          "response": {
+            "activity_id": "show456",
+            "description": "David Copperfield's classic magic show is breathtaking.",
+            "location": "MGM Grand",
+            "name": "David Copperfield Magic Show",
+            "time": "21:00"
+          },
+          "status_code": 200
+        }
+      },
+      {
+        "action": {
+          "arguments": {
+            "answer_type": "tool"
+          },
+          "name": "prepare_to_answer"
+        },
+        "dependency_list": [2, 3],
+        "idx": 4,
+        "observation": "### Las Vegas Weekend Air Quality\n\n- **2024-07-13**: AQI 45, the air quality is good.\n- **2024-07-14**: AQI 50, the air quality is good.\n\n### Las Vegas Weekend Special Performances\n\n1. **Cirque du Soleil**\n   - Date: 2024-07-13\n- Location: MGM Grand\n   - Time: 19:00\n   - Description: A thrilling and artistic circus show suitable for the whole family.\n\n2. **David Copperfield Magic Show**\n   - Date: 2024-07-14\n   - Location: MGM Grand\n   - Time: 21:00\n   - Description: David Copperfield's classic magic show is breathtaking.\n\nHope this information can help you plan a pleasant weekend trip!"
+      }
+    ],
+    [
+      {
+        "action": {
+          "arguments": {
+            "answer_type": "chat"
+          },
+          "name": "prepare_to_answer"
+        },
+        "dependency_list": [],
+        "idx": 0,
+        "observation": "The MGM Grand is located in Las Vegas, Nevada, USA. The specific address is: 3799 South Las Vegas Boulevard, Las Vegas, NV 89109. It is situated on the famous Las Vegas Strip and is one of the most well-known hotels and casinos in the city."
+      }
+    ]
+  ],
+  "turn_types": [false, true, true, true],
+  "turn_subtypes": [
+    "Partial Information",
+    "Partial Information",
+    "Coreferential Reference"
+  ],
+  "task_types": ["Single-Tool", "Single-Tool", "Mixed Multi-Tool", "Chat"]
+}
