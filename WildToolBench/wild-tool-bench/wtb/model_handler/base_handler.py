@@ -68,42 +68,45 @@ class BaseHandler:
         
         def cast_value(val, prop_schema):
             prop_type = prop_schema.get("type")
-            if prop_type == "integer":
-                try:
-                    return int(float(val))
-                except:
-                    pass
-            elif prop_type == "number":
-                try:
-                    return float(val)
-                except:
-                    pass
+            if prop_type in ["integer", "number"]:
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    return int(val) if prop_type == "integer" else float(val)
+                if isinstance(val, str):
+                    s_val = val.strip()
+                    # Only parse if s_val is a pure numeric literal (e.g. "250", "250.0")
+                    # Do NOT coerce if s_val contains currency or units ("250 yuan", "10 miles")
+                    if re.match(r"^-?\d+(\.\d+)?$", s_val):
+                        try:
+                            return int(float(s_val)) if prop_type == "integer" else float(s_val)
+                        except Exception:
+                            pass
             elif prop_type == "boolean":
                 if isinstance(val, str):
                     if val.lower() in ["true", "1"]:
                         return True
                     if val.lower() in ["false", "0"]:
                         return False
+            elif prop_type == "string":
+                if not isinstance(val, str):
+                    return str(val)
+                return val
             elif prop_type == "array" and isinstance(val, str):
                 try:
                     loaded = json.loads(val)
                     if isinstance(loaded, list):
                         return loaded
-                except:
+                except Exception:
                     pass
             elif prop_type == "object" and isinstance(val, dict):
-                # Recursive cleaning for nested objects
                 nested_properties = prop_schema.get("properties", {})
                 cleaned_nested = {}
                 for k, v in val.items():
                     if k in nested_properties:
                         cleaned_nested[k] = cast_value(v, nested_properties[k])
                 return cleaned_nested
-            # Enum check
             if "enum" in prop_schema:
                 enum_options = prop_schema["enum"]
                 if isinstance(val, str):
-                    # Case-insensitive match
                     for opt in enum_options:
                         if isinstance(opt, str) and opt.lower() == val.lower():
                             return opt
@@ -657,12 +660,21 @@ class BaseHandler:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
 
-            # Structural Exclusion Hard Gate (MCSG Refinement)
-            if mcsg_state["action_class"] == "under_specified":
-                # Exclude plain text signatures when required slots are missing
+            # Structural Exclusion Hard Gate (MCSG Refinement: IGAR v24)
+            if mcsg_state["action_class"] in ("under_specified", "grounded_tool"):
+                # Exclude plain text signatures when required slots are missing OR when a tool is 100% grounded
                 filtered_winners = [s for s in winners if s != ("text",)]
                 if filtered_winners:
                     winners = filtered_winners
+
+            # Prioritize candidate signatures matching feasible_tools from dialogue_state
+            if len(winners) > 1 and dialogue_state and dialogue_state.get("feasible_tools"):
+                feas_tools = set(dialogue_state["feasible_tools"])
+                feasible_winners = [
+                    s for s in winners if s[0] == "tools" and len(s) > 1 and s[1] in feas_tools
+                ]
+                if feasible_winners:
+                    winners = feasible_winners
 
             if len(winners) == 1:
                 winning_signature = winners[0]
@@ -773,10 +785,19 @@ class BaseHandler:
         audit = self._candidate_violations(chosen, inference_data)
         if audit["total"] == 0:
             return chosen
+        dialogue_state = inference_data.get("dialogue_state")
+        d_state_note = ""
+        if dialogue_state and isinstance(dialogue_state, dict):
+            feas = dialogue_state.get("feasible_tools", [])
+            unres = dialogue_state.get("unresolved_required_slots", {})
+            clar = dialogue_state.get("clarify_slot")
+            d_state_note = f"\nDialogue State: feasible_tools={feas}, unresolved_slots={unres}, clarify_slot={clar}\n"
+
         draft = json.dumps([tc.get("function") for tc in chosen["tool_calls"]], ensure_ascii=False)
         note = (
             "AUDIT: your drafted tool call(s) " + draft + " have these problems:\n- "
             + "\n- ".join(audit["detail"])
+            + d_state_note
             + "\nEmit the corrected tool call(s) now: fix or remove only the flagged parts and add nothing new. "
               "If a required parameter's value is genuinely missing from the conversation, ask the user for it instead."
         )
