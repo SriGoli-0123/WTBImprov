@@ -1,0 +1,135 @@
+{
+    "model_name": "Qwen_Qwen2.5-7B-Instruct",
+    "total_info": {
+        "task": {
+            "accuracy": 0.3798828125,
+            "correct_count": 389,
+            "total_count": 1024
+        },
+        "session": {
+            "accuracy": 0.02734375,
+            "correct_count": 7,
+            "total_count": 256
+        }
+    },
+    "task_type_info": {
+        "Single-Tool": {
+            "accuracy": 0.359375,
+            "correct_count": 92,
+            "total_count": 256
+        },
+        "Multi-Tool": {
+            "accuracy": 0.1484375,
+            "correct_count": 38,
+            "total_count": 256
+        },
+        "Parallel Multi-Tool": {
+            "accuracy": 0.21153846153846154,
+            "correct_count": 33,
+            "total_count": 156
+        },
+        "Sequential Multi-Tool": {
+            "accuracy": 0.1875,
+            "correct_count": 3,
+            "total_count": 16
+        },
+        "Mixed Multi-Tool": {
+            "accuracy": 0.023809523809523808,
+            "correct_count": 2,
+            "total_count": 84
+        },
+        "Clarify": {
+            "accuracy": 0.23828125,
+            "correct_count": 61,
+            "total_count": 256
+        },
+        "Chat": {
+            "accuracy": 0.7734375,
+            "correct_count": 198,
+            "total_count": 256
+        }
+    },
+    "layer_info": {
+        "0": {
+            "accuracy": 0.54296875,
+            "correct_count": 139,
+            "total_count": 256
+        },
+        "1": {
+            "accuracy": 0.38671875,
+            "correct_count": 99,
+            "total_count": 256
+        },
+        "2": {
+            "accuracy": 0.32421875,
+            "correct_count": 83,
+            "total_count": 256
+        },
+        "3": {
+            "accuracy": 0.265625,
+            "correct_count": 68,
+            "total_count": 256
+        }
+    },
+    "turn_subtype_info": {
+        "First Turn": {
+            "accuracy": 0.54296875,
+            "correct_count": 139,
+            "total_count": 256
+        },
+        "Subsequent Turn": {
+            "accuracy": 0.3255208333333333,
+            "correct_count": 250,
+            "total_count": 768
+        },
+        "Coreferential Reference": {
+            "accuracy": 0.3753581661891118,
+            "correct_count": 131,
+            "total_count": 349
+        },
+        "Partial Information": {
+            "accuracy": 0.32083333333333336,
+            "correct_count": 77,
+            "total_count": 240
+        },
+        "Long-Range Dependency": {
+            "accuracy": 0.2346368715083799,
+            "correct_count": 42,
+            "total_count": 179
+        }
+    },
+    "optimal_info": {
+        "Total": {
+            "accuracy": 0.125,
+            "correct_count": 30,
+            "total_count": 240
+        },
+        "Parallel Multi-Tool": {
+            "accuracy": 0.19230769230769232,
+            "correct_count": 30,
+            "total_count": 156
+        },
+        "Mixed Multi-Tool": {
+            "accuracy": 0.0,
+            "correct_count": 0,
+            "total_count": 84
+        }
+    },
+    "progress_info": {
+        "Total": {
+            "rate": 0.2730318257956449,
+            "complete_step": 163,
+            "total_step": 597
+        },
+        "Sequential Multi-Tool": {
+            "rate": 0.5283018867924528,
+            "complete_step": 28,
+            "total_step": 53
+        },
+        "Mixed Multi-Tool": {
+            "rate": 0.24816176470588236,
+            "complete_step": 135,
+            "total_step": 544
+        }
+    }
+}
