@@ -635,32 +635,17 @@ class BaseHandler:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
 
-            # Clarification-Dominant Commit Gate (CDCG)
+            # Structural Exclusion Hard Gate (MCSG Refinement)
             if mcsg_state["action_class"] == "under_specified":
-                # Rule 1: Exclude plain text signatures when required slots are missing
+                # Exclude plain text signatures when required slots are missing
                 filtered_winners = [s for s in winners if s != ("text",)]
-                
-                # Rule 2: Filter out candidate tool calls that have missing required parameters
-                grounded_tool_winners = []
-                for sig in filtered_winners:
-                    if sig[0] == "tools":
-                        clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                        # Check if at least one candidate in cluster has zero missing required slots
-                        has_grounded = any(
-                            self._candidate_violations(c, inference_data)["total"] == 0
-                            for c in clust
-                        )
-                        if has_grounded:
-                            grounded_tool_winners.append(sig)
-
-                if grounded_tool_winners:
-                    winners = grounded_tool_winners
-                elif filtered_winners:
+                if filtered_winners:
                     winners = filtered_winners
 
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
+                # MCSG Constrained Voting: If MCSG indicates ambiguous_chat, prefer text signature
                 if mcsg_state["action_class"] == "ambiguous_chat" and ("text",) in winners:
                     winning_signature = ("text",)
                 else:
