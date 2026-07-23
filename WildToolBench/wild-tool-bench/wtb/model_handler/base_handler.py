@@ -202,18 +202,25 @@ class BaseHandler:
             return True
         return value.strip()[:10] in candidates
 
-    def _is_grounded(self, value, context_text, key_name=None):
+    def _is_grounded(self, value, context_text, key_name=None, dialogue_state=None):
         '''
         A value is grounded if it is traceable to something already visible
-        to the model: quoted verbatim from the conversation/Ledger (QUOTE /
-        RESOLVE), or shaped like a resolved date/time (COMPUTE). Container
-        values are grounded only if every leaf value inside them is.
+        to the model via dialogue_state provenance (QUOTE / RESOLVE / TOOL / LEDGER),
+        or text context, or shaped like a resolved date/time (COMPUTE).
         '''
         if value is None:
             return True
+
+        if key_name and dialogue_state and isinstance(dialogue_state, dict):
+            prov_map = dialogue_state.get("provenance_by_slot", {})
+            key_lower = str(key_name).lower()
+            if key_lower in prov_map:
+                prov_val = str(prov_map[key_lower].get("value", "")).lower()
+                val_str = str(value).strip().lower()
+                if val_str and (val_str in prov_val or prov_val in val_str):
+                    return True
+
         if isinstance(value, bool):
-            # A boolean is only grounded if its key or boolean context is
-            # mentioned in the conversation text, or if it is required by schema.
             if key_name and _normalize_str(key_name) in _normalize_str(context_text):
                 return True
             return False
@@ -244,18 +251,13 @@ class BaseHandler:
                     leaves.append(v)
 
             collect(value)
-            return all(self._is_grounded(leaf, context_text, key_name) for leaf in leaves)
+            return all(self._is_grounded(leaf, context_text, key_name, dialogue_state) for leaf in leaves)
         return True
 
-    def _verify_and_filter_arguments(self, tool_name, arguments_dict, tools, context_text):
+    def _verify_and_filter_arguments(self, tool_name, arguments_dict, tools, context_text, dialogue_state=None):
         '''
         Receipt gate: an argument survives only if it is required by the
-        schema or grounded in the conversation. Required keys are never
-        removed (the schema always wins) but are flagged if ungrounded, so
-        an ungrounded-required case is visible in the log instead of silently
-        passed through. Every ungrounded optional key is dropped - this is
-        what eliminates hallucinated defaults (format, quality, limit, ...)
-        mechanically instead of relying on the prompt being obeyed.
+        schema or grounded in dialogue_state / conversation context.
         '''
         required = set()
         properties = {}
@@ -271,7 +273,7 @@ class BaseHandler:
         dropped_keys = []
         ungrounded_required = []
         for key, value in arguments_dict.items():
-            grounded = self._is_grounded(value, context_text, key_name=key)
+            grounded = self._is_grounded(value, context_text, key_name=key, dialogue_state=dialogue_state)
             if key in required:
                 kept[key] = value
                 if not grounded:
@@ -279,8 +281,6 @@ class BaseHandler:
             elif grounded:
                 kept[key] = value
             elif self._is_intent_argument(key, value, properties.get(key), context_text):
-                # Ungrounded, but of a kind that literal grounding cannot see:
-                # kept deliberately (see _is_intent_argument).
                 kept[key] = value
             else:
                 dropped_keys.append(key)
@@ -344,11 +344,11 @@ class BaseHandler:
             return self._is_abbreviation_of_context(value, context_text)
         return False
 
-    def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log):
+    def _clean_and_verify_call(self, tc_name, tc_args, tools, messages, step, inference_log, dialogue_state=None):
         cleaned_args = self._clean_tool_call_arguments(tc_name, tc_args, tools)
         context_text = json.dumps(messages, ensure_ascii=False)
         cleaned_args, dropped_keys, ungrounded_required = self._verify_and_filter_arguments(
-            tc_name, cleaned_args, tools, context_text
+            tc_name, cleaned_args, tools, context_text, dialogue_state=dialogue_state
         )
         if dropped_keys or ungrounded_required:
             inference_log.setdefault("receipt_notes", []).append({
@@ -531,14 +531,38 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
-    def _minimum_commitment_gate(self, tools, messages):
+    def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
         MCSG Core Component: Minimum-Commitment Schema Gate.
-        Computes pre-generation action class before candidate commitment:
-          1. 'grounded_tool': Tool path has 100% required parameters grounded.
+        Computes pre-generation action class before candidate commitment from dialogue_state:
+          1. 'grounded_tool': At least 1 feasible tool path has 100% required parameters grounded.
           2. 'under_specified': Required parameter missing. Returns highest-coverage missing slot.
           3. 'ambiguous_chat': No tool intent grounded -> Chat mode.
         '''
+        if dialogue_state and isinstance(dialogue_state, dict):
+            feasible_tools = dialogue_state.get("feasible_tools", [])
+            unresolved = dialogue_state.get("unresolved_required_slots", {})
+            clarify_slot = dialogue_state.get("clarify_slot")
+
+            if len(feasible_tools) >= 1:
+                return {
+                    "action_class": "grounded_tool",
+                    "target_tools": feasible_tools,
+                    "highest_missing_slot": None
+                }
+            elif unresolved:
+                return {
+                    "action_class": "under_specified",
+                    "target_tools": list(unresolved.keys()),
+                    "highest_missing_slot": clarify_slot
+                }
+            else:
+                return {
+                    "action_class": "ambiguous_chat",
+                    "target_tools": [],
+                    "highest_missing_slot": None
+                }
+
         ctx_text = json.dumps(messages, ensure_ascii=False).lower()
         slot_coverage = Counter()
         tool_status = {}
@@ -562,7 +586,6 @@ class BaseHandler:
 
         fully_grounded_tools = [t for t, status in tool_status.items() if status["fully_grounded"]]
         
-        # Rule 1: Fully Grounded Tool Path Available
         if len(fully_grounded_tools) >= 1:
             return {
                 "action_class": "grounded_tool",
@@ -570,7 +593,6 @@ class BaseHandler:
                 "highest_missing_slot": None
             }
 
-        # Rule 2: Under-Specified (Required parameters missing across candidate tools)
         missing_slots = Counter()
         for t, status in tool_status.items():
             for m_slot in status["missing"]:
@@ -584,7 +606,6 @@ class BaseHandler:
                 "highest_missing_slot": highest_missing_slot
             }
 
-        # Rule 3: Ambiguous / Conversational Chat State
         return {
             "action_class": "ambiguous_chat",
             "target_tools": [],
@@ -595,7 +616,7 @@ class BaseHandler:
         '''
         Self-consistency (consensus) decoding with MCSG (Minimum-Commitment Schema Gate).
         Evaluates pre-generation action class (grounded_tool, under_specified, ambiguous_chat)
-        and locks commitment before final output emission.
+        from dialogue_state and locks commitment before final output emission.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
@@ -623,10 +644,11 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        # MCSG: Evaluate Pre-Generation Action Gate
+        # MCSG: Evaluate Pre-Generation Action Gate from Dialogue State
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
-        mcsg_state = self._minimum_commitment_gate(tools, messages)
+        dialogue_state = inference_data.get("dialogue_state")
+        mcsg_state = self._minimum_commitment_gate(tools, messages, dialogue_state=dialogue_state)
         consensus_log["mcsg_state"] = mcsg_state
 
         if not vote_counts:
@@ -914,6 +936,124 @@ class BaseHandler:
 
         return [f"{position}{k}: {s_v}" for (k, s_v), position in entities.items()]
 
+    def _build_dialogue_state(self, tools, messages, history_answer_lists=None):
+        '''
+        Stateful Dialogue State Builder.
+        
+        Indexes known facts and slot provenance across prior tool observations,
+        ledger entries, user messages, and system context.
+        
+        Returns:
+            {
+                "known_facts": list of surfaced observation facts,
+                "provenance_by_slot": dict mapping slot name to provenance info,
+                "unresolved_required_slots": dict mapping tool_name to list of missing required slots,
+                "feasible_tools": list of tool_names whose required slots are 100% grounded by provenance,
+                "clarify_slot": highest coverage missing required slot,
+            }
+        '''
+        known_facts = self._extract_observation_facts(history_answer_lists) if history_answer_lists else []
+        provenance_by_slot = {}
+        
+        ctx_text = json.dumps(messages or [], ensure_ascii=False).lower()
+        
+        for turn_idx, msg in enumerate(messages or []):
+            role = msg.get("role", "")
+            content = msg.get("content")
+            if not content:
+                continue
+            
+            source_type = "user" if role == "user" else ("assistant" if role == "assistant" else "tool")
+            
+            if role == "tool":
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                    def walk_payload(obj):
+                        if isinstance(obj, dict):
+                            for k, v in obj.items():
+                                if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+                                    val_str = str(v).strip()
+                                    if val_str:
+                                        provenance_by_slot[str(k).lower()] = {
+                                            "value": val_str,
+                                            "source": "tool_observation",
+                                            "turn": turn_idx
+                                        }
+                                elif isinstance(v, (dict, list)):
+                                    walk_payload(v)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                walk_payload(item)
+                    walk_payload(payload)
+                except Exception:
+                    pass
+            elif isinstance(content, str):
+                for token in re.findall(r'[a-zA-Z0-9_\-]+', content.lower()):
+                    if len(token) >= 2:
+                        provenance_by_slot.setdefault(token, {
+                            "value": token,
+                            "source": source_type,
+                            "turn": turn_idx
+                        })
+
+        for fact in known_facts:
+            if ":" in fact:
+                parts = fact.split(":", 1)
+                k = parts[0].replace("[", " ").replace("]", " ").strip().lower()
+                v = parts[1].strip()
+                provenance_by_slot[k] = {
+                    "value": v,
+                    "source": "ledger_fact",
+                    "turn": 0
+                }
+
+        slot_coverage = Counter()
+        unresolved_required_slots = {}
+        feasible_tools = []
+
+        for t in (tools or []):
+            func = t.get("function", {})
+            tname = func.get("name")
+            if not tname:
+                continue
+            params = func.get("parameters", {}) or {}
+            req = set(params.get("required", []) or [])
+            for slot in req:
+                slot_coverage[slot] += 1
+
+            missing = []
+            for slot in req:
+                slot_lower = slot.lower()
+                is_grounded = (
+                    slot_lower in provenance_by_slot or
+                    slot_lower in ctx_text or
+                    self._is_abbreviation_of_context(slot, ctx_text)
+                )
+                if not is_grounded:
+                    missing.append(slot)
+
+            if missing:
+                unresolved_required_slots[tname] = missing
+            else:
+                feasible_tools.append(tname)
+
+        clarify_slot = None
+        if unresolved_required_slots:
+            missing_slots_counter = Counter()
+            for t, m_slots in unresolved_required_slots.items():
+                for s in m_slots:
+                    missing_slots_counter[s] += slot_coverage[s]
+            if missing_slots_counter:
+                clarify_slot = missing_slots_counter.most_common(1)[0][0]
+
+        return {
+            "known_facts": known_facts,
+            "provenance_by_slot": provenance_by_slot,
+            "unresolved_required_slots": unresolved_required_slots,
+            "feasible_tools": feasible_tools,
+            "clarify_slot": clarify_slot
+        }
+
     def _unfounded_required(self, tool_calls, tools, context_text):
         '''
         Receipts for REQUIRED arguments.
@@ -986,7 +1126,7 @@ class BaseHandler:
             print(f"Clarification re-prompt failed, keeping original call: {e}", flush=True)
             return None
 
-    def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True):
+    def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True, tools=None):
         messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
         ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
         if ledger:
@@ -1003,7 +1143,23 @@ class BaseHandler:
                 "content": "Surfaced Observation Facts (use directly for referential ID binding):\n" + fact_str
             })
         messages.append({"role": "user", "content": current_task})
-        return messages
+
+        dialogue_state = self._build_dialogue_state(tools, messages, history_answer_lists)
+        if facts or ledger:
+            d_state_lines = [
+                "Dialogue State:",
+                f"- known_facts: {len(dialogue_state['known_facts'])} items",
+                f"- feasible_tools: {dialogue_state['feasible_tools']}",
+                f"- unresolved_required_slots: {dialogue_state['unresolved_required_slots']}",
+            ]
+            if dialogue_state['clarify_slot']:
+                d_state_lines.append(f"- clarify_slot: {dialogue_state['clarify_slot']}")
+            messages.insert(-1, {
+                "role": "system",
+                "content": "\n".join(d_state_lines)
+            })
+
+        return messages, dialogue_state
 
     def inference(self, test_entry: dict):
         return self.inference_multi_turn(test_entry)
@@ -1022,9 +1178,18 @@ class BaseHandler:
         for task_idx, (current_task, answer_list) in enumerate(zip(tasks, answer_lists)):
             history_tasks = tasks[:task_idx]
             history_answer_lists = answer_lists[:task_idx]
-            messages = self._pre_messages_processing(env_info, current_task, history_tasks, history_answer_lists)
+            messages, dialogue_state = self._pre_messages_processing(
+                env_info, current_task, history_tasks, history_answer_lists, tools=tools
+            )
 
-            inference_data = {"test_entry_id": test_entry_id, "task_idx": task_idx, "tools": tools, "messages": messages, "answer_list": answer_list}
+            inference_data = {
+                "test_entry_id": test_entry_id,
+                "task_idx": task_idx,
+                "tools": tools,
+                "messages": messages,
+                "answer_list": answer_list,
+                "dialogue_state": dialogue_state
+            }
             result_data = self.inference_and_eval_multi_step(inference_data)
             all_task_result_data.append(result_data)
 
@@ -1089,6 +1254,7 @@ class BaseHandler:
             reasoning_content = model_response_data["reasoning_content"]
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
+            dialogue_state = inference_data.get("dialogue_state")
             if tool_calls is not None:
                 # Schema cleaner + receipt gate (ungrounded optionals dropped)
                 cleaned_tool_calls = []
@@ -1098,10 +1264,10 @@ class BaseHandler:
                         tc_args_str = tc["function"]["arguments"]
                         if isinstance(tc_args_str, str):
                             tc_args = json.loads(tc_args_str)
-                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args, tools, messages, step, inference_log)
+                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args, tools, messages, step, inference_log, dialogue_state=dialogue_state)
                             tc["function"]["arguments"] = json.dumps(cleaned_args, ensure_ascii=False)
                         elif isinstance(tc_args_str, dict):
-                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args_str, tools, messages, step, inference_log)
+                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args_str, tools, messages, step, inference_log, dialogue_state=dialogue_state)
                             tc["function"]["arguments"] = cleaned_args
                     except Exception as e:
                         print(f"Cleaner error: {e}", flush=True)
@@ -1110,11 +1276,11 @@ class BaseHandler:
                 model_response_data["tool_calls"] = tool_calls
 
                 # Ask-instead-of-guess: if a REQUIRED value was invented rather
-                # than taken from the conversation, hand the turn back to the
-                # user rather than acting on the guess.
+                # than taken from the conversation or dialogue state provenance,
+                # hand the turn back to the user rather than acting on the guess.
                 if self.ask_gate:
                     unfounded = self._unfounded_required(
-                        tool_calls, tools, json.dumps(messages, ensure_ascii=False)
+                        tool_calls, tools, json.dumps(messages, ensure_ascii=False), dialogue_state=dialogue_state
                     )
                     if unfounded:
                         clarification = self._authored_clarification(inference_data, content)
