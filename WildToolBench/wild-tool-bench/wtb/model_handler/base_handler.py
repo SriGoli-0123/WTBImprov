@@ -591,24 +591,96 @@ class BaseHandler:
             "highest_missing_slot": None
         }
 
+    def _prune_optional_arguments(self, candidate, inference_data):
+        '''
+        PS-MCA Phase 4: Deterministic Optional-Argument Pruning & Case Canonicalization.
+        Keeps required arguments. Strips ungrounded optional arguments.
+        Canonicalizes string enum casing to match OpenAPI schema targets.
+        '''
+        tcalls = candidate.get("tool_calls") or []
+        if not tcalls:
+            return candidate
+
+        tools = inference_data.get("tools") or []
+        schemas = {t.get("function", {}).get("name"): t.get("function", {}) for t in tools}
+        ctx_text = json.dumps(inference_data.get("messages", []), ensure_ascii=False).lower()
+
+        pruned_tcalls = []
+        for tc in tcalls:
+            func = tc.get("function", {})
+            tname = func.get("name")
+            if not tname or tname not in schemas:
+                continue # PS-MCA Phase 5: Reject invalid tool names
+
+            schema = schemas[tname]
+            params_schema = schema.get("parameters", {}) or {}
+            required_fields = set(params_schema.get("required", []) or [])
+            properties = params_schema.get("properties", {}) or {}
+
+            args = func.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            
+            if not isinstance(args, dict):
+                continue
+
+            pruned_args = {}
+            for k, v in args.items():
+                v_str = str(v).lower()
+                # Rule 1: Always keep required arguments
+                if k in required_fields:
+                    # Enum case canonicalization
+                    if k in properties and "enum" in properties[k]:
+                        enum_vals = properties[k]["enum"]
+                        match = next((ev for ev in enum_vals if str(ev).lower() == v_str), v)
+                        pruned_args[k] = match
+                    else:
+                        pruned_args[k] = v
+                # Rule 2: Keep optional arguments ONLY if grounded in context
+                elif v_str in ctx_text:
+                    if k in properties and "enum" in properties[k]:
+                        enum_vals = properties[k]["enum"]
+                        match = next((ev for ev in enum_vals if str(ev).lower() == v_str), v)
+                        pruned_args[k] = match
+                    else:
+                        pruned_args[k] = v
+
+            pruned_tcalls.append({
+                "id": tc.get("id", "chatcmpl-tool-pruned"),
+                "type": "function",
+                "function": {
+                    "name": tname,
+                    "arguments": json.dumps(pruned_args, ensure_ascii=False)
+                }
+            })
+
+        if pruned_tcalls:
+            candidate["tool_calls"] = pruned_tcalls
+        return candidate
+
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency (consensus) decoding with MCSG (Minimum-Commitment Schema Gate).
-        Evaluates pre-generation action class (grounded_tool, under_specified, ambiguous_chat)
-        and locks commitment before final output emission.
+        Self-consistency (consensus) decoding with PS-MCA (Policy-Switched Minimum-Commitment Architecture).
+        Evaluates pre-generation action class (gclarify, gchat, gsingle, gmulti),
+        applies structural exclusion gates, and prunes ungrounded optional arguments.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
         anchor["latency"] = latency
 
         if self.sc_n <= 1 or not hasattr(self, "_request_candidates"):
-            return self._maybe_repair(anchor, inference_data)
+            chosen = self._prune_optional_arguments(anchor, inference_data)
+            return self._maybe_repair(chosen, inference_data)
 
         try:
             extra = self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
         except Exception as e:
             print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
-            return self._maybe_repair(anchor, inference_data)
+            chosen = self._prune_optional_arguments(anchor, inference_data)
+            return self._maybe_repair(chosen, inference_data)
 
         candidates = [self._normalize_response(dict(anchor))]
         candidates.extend(self._normalize_response(dict(c)) for c in extra)
@@ -623,7 +695,7 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        # MCSG: Evaluate Pre-Generation Action Gate
+        # PS-MCA Phase 1: Evaluate Pre-Generation Action Gate
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
         mcsg_state = self._minimum_commitment_gate(tools, messages)
@@ -635,7 +707,7 @@ class BaseHandler:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
 
-            # Structural Exclusion Hard Gate (MCSG Refinement)
+            # PS-MCA Structural Exclusion Hard Gate
             if mcsg_state["action_class"] == "under_specified":
                 # Exclude plain text signatures when required slots are missing
                 filtered_winners = [s for s in winners if s != ("text",)]
@@ -645,7 +717,6 @@ class BaseHandler:
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # MCSG Constrained Voting: If MCSG indicates ambiguous_chat, prefer text signature
                 if mcsg_state["action_class"] == "ambiguous_chat" and ("text",) in winners:
                     winning_signature = ("text",)
                 else:
@@ -666,6 +737,8 @@ class BaseHandler:
                 consensus_log["checker_violation_scores"] = scores
                 consensus_log["checker_pick"] = best_idx
 
+        # PS-MCA Phase 4: Optional-Argument Pruning
+        chosen = self._prune_optional_arguments(chosen, inference_data)
         chosen = dict(chosen)
         chosen["input_token"] = total_input
         chosen["output_token"] = total_output
