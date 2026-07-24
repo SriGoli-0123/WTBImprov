@@ -864,6 +864,7 @@ class BaseHandler:
             clarification_text = f"Could you please specify the {clarify_slot} so I can assist you accurately?"
             return {
                 "role": "assistant",
+                "reasoning_content": None,
                 "content": clarification_text,
                 "tool_calls": None,
                 "latency": 0.0,
@@ -1749,9 +1750,9 @@ class BaseHandler:
             model_response_data = self._consensus_generate(inference_data)
             query_latency = model_response_data.get("latency", 0)
             consensus_log = model_response_data.pop("consensus_log", None)
-            reasoning_content = model_response_data["reasoning_content"]
-            content = model_response_data["content"]
-            tool_calls = model_response_data["tool_calls"]
+            reasoning_content = model_response_data.get("reasoning_content")
+            content = model_response_data.get("content")
+            tool_calls = model_response_data.get("tool_calls")
             dialogue_state = inference_data.get("dialogue_state")
             if tool_calls is not None:
                 # Schema cleaner + receipt gate (ungrounded optionals dropped)
