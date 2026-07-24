@@ -552,51 +552,28 @@ class BaseHandler:
 
     def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
-        MCSG Core Component: Minimum-Commitment Schema Gate.
-        Computes pre-generation action class before candidate commitment from dialogue_state:
-          1. 'grounded_tool': At least 1 feasible tool path has 100% required parameters grounded.
-          2. 'under_specified': Required parameter missing. Returns highest-coverage missing slot.
-          3. 'ambiguous_chat': No tool intent grounded -> Chat mode.
+        Return a *preference*, never a global clarification verdict.
+
+        A state can identify several relevant tools with incompatible required
+        slots.  Treating any missing slot on any such tool as evidence that the
+        user must clarify was the source of false asks (for example, a request
+        for Ontario, Canada was blocked by unrelated schema labels such as
+        ``countryCode``).  Only the generated, selected tool path may establish
+        that it is blocked; see _assess_selected_commitment.
         '''
         if dialogue_state and isinstance(dialogue_state, dict):
-            feasible_tools = dialogue_state.get("feasible_tools", [])
-            unresolved = dialogue_state.get("unresolved_required_slots", {})
-            clarify_slot = dialogue_state.get("clarify_slot")
-
-            # The latent-state commitment is intentionally narrow and local to
-            # this turn.  It does not predict future actions or replace voting.
-            commitment = dialogue_state.get("action_commitment")
-            if commitment == "ask_user_for_required_parameters":
+            plausible_tools = dialogue_state.get("plausible_tools", [])
+            if plausible_tools:
                 return {
-                    "action_class": "under_specified",
-                    "target_tools": list(unresolved.keys()),
-                    "highest_missing_slot": clarify_slot,
-                }
-            if commitment == "tool":
-                return {
-                    "action_class": "grounded_tool",
-                    "target_tools": feasible_tools,
+                    "action_class": "tool_preferred",
+                    "target_tools": plausible_tools,
                     "highest_missing_slot": None,
                 }
-
-            if len(feasible_tools) >= 1:
-                return {
-                    "action_class": "grounded_tool",
-                    "target_tools": feasible_tools,
-                    "highest_missing_slot": None
-                }
-            elif unresolved:
-                return {
-                    "action_class": "under_specified",
-                    "target_tools": list(unresolved.keys()),
-                    "highest_missing_slot": clarify_slot
-                }
-            else:
-                return {
-                    "action_class": "ambiguous_chat",
-                    "target_tools": [],
-                    "highest_missing_slot": None
-                }
+            return {
+                "action_class": "ambiguous_chat",
+                "target_tools": [],
+                "highest_missing_slot": None,
+            }
 
         ctx_text = json.dumps(messages, ensure_ascii=False).lower()
         slot_coverage = Counter()
@@ -623,22 +600,9 @@ class BaseHandler:
         
         if len(fully_grounded_tools) >= 1:
             return {
-                "action_class": "grounded_tool",
+                "action_class": "tool_preferred",
                 "target_tools": fully_grounded_tools,
                 "highest_missing_slot": None
-            }
-
-        missing_slots = Counter()
-        for t, status in tool_status.items():
-            for m_slot in status["missing"]:
-                missing_slots[m_slot] += slot_coverage[m_slot]
-
-        if missing_slots:
-            highest_missing_slot = missing_slots.most_common(1)[0][0]
-            return {
-                "action_class": "under_specified",
-                "target_tools": list(tool_status.keys()),
-                "highest_missing_slot": highest_missing_slot
             }
 
         return {
@@ -649,9 +613,9 @@ class BaseHandler:
 
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency (consensus) decoding with MCSG (Minimum-Commitment Schema Gate).
-        Evaluates pre-generation action class (grounded_tool, under_specified, ambiguous_chat)
-        from dialogue_state and locks commitment before final output emission.
+        Self-consistency decoding with a tool-first, selected-path commitment
+        preference.  Dialogue state can only break a tied vote toward a
+        plausible tool; it cannot globally force a clarification.
         '''
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
@@ -692,14 +656,11 @@ class BaseHandler:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
 
-            # Commitment is a hard action-class guard only for this turn.  A
-            # missing required value must clarify; an executable state should
-            # use a tool if any candidate produced one.
-            if mcsg_state["action_class"] == "under_specified":
-                filtered_winners = [s for s in winners if s == ("text",)]
-                if filtered_winners:
-                    winners = filtered_winners
-            elif mcsg_state["action_class"] == "grounded_tool":
+            # A plausible user goal biases an otherwise tied vote toward an
+            # information-advancing tool.  It never suppresses a generated
+            # clarification: only the selected tool path can prove whether an
+            # indispensable value is missing.
+            if mcsg_state["action_class"] == "tool_preferred":
                 filtered_winners = [s for s in winners if s[0] == "tools"]
                 if filtered_winners:
                     winners = filtered_winners
@@ -1147,27 +1108,24 @@ class BaseHandler:
                 "missing": missing, "relevance": relevance,
             }
 
+        # Relevant tools are candidate commitments, not a global schema gate.
+        # A candidate may contain a required field whose label is absent even
+        # though the user supplied its value semantically (BBC -> source,
+        # CPU2023 -> partNumber).  The selected tool call, with its actual
+        # arguments and receipts, is the only place where executability can be
+        # decided safely.
+        plausible_tools = list(tool_status)
         feasible_tools = [name for name, status in tool_status.items() if not status["missing"]]
         unresolved_required_slots = {
             name: status["missing"] for name, status in tool_status.items() if status["missing"]
         }
         clarify_slot = None
-        if unresolved_required_slots and not feasible_tools:
-            missing_counts = Counter(
-                slot for slots in unresolved_required_slots.values() for slot in slots
-            )
-            clarify_slot = missing_counts.most_common(1)[0][0]
-
-        if feasible_tools:
-            commitment = "tool"
-        elif clarify_slot:
-            commitment = "ask_user_for_required_parameters"
-        else:
-            commitment = "chat"
+        # The mode is intentionally a tool-first preference rather than a
+        # pre-generation ask verdict.  Clarification is emitted only after a
+        # selected tool path has been audited below.
+        commitment = "tool" if plausible_tools else "chat"
         if last_successful_tool_name and commitment == "tool":
             workflow_stage = "continue_tool_workflow"
-        elif commitment == "ask_user_for_required_parameters":
-            workflow_stage = "collect_required_parameters"
         elif commitment == "tool":
             workflow_stage = "execute"
         else:
@@ -1185,6 +1143,7 @@ class BaseHandler:
             "last_successful_tool_family": last_successful_tool_family,
             "feasible_tool_families": sorted({tool_status[t]["family"] for t in feasible_tools}),
             "feasible_tools": feasible_tools,
+            "plausible_tools": plausible_tools,
             "clarify_slot": clarify_slot,
             "action_commitment": commitment,
             "tool_status": tool_status,
@@ -1265,6 +1224,55 @@ class BaseHandler:
                     continue
                 hits.append({"tool": name, "param": key, "value": text})
         return hits
+
+    def _assess_selected_commitment(self, tool_calls, tools, context_text, dialogue_state=None):
+        """Audit only the action path the model actually selected.
+
+        This is the commitment proof consumed by the ask gate and logs.  Unlike
+        the old state gate, it never lets an unrelated available tool veto an
+        otherwise grounded action.  A required value is blocked only when it is
+        absent from the selected call or its supplied value has no receipt.
+        """
+        schemas = {
+            func.get("name"): func
+            for tool in tools or []
+            for func in [tool.get("function", {})]
+            if func.get("name")
+        }
+        paths = []
+        for tc in tool_calls or []:
+            func = tc.get("function", {})
+            name = func.get("name")
+            schema = schemas.get(name, {})
+            args = func.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            args = args if isinstance(args, dict) else {}
+            required = list(schema.get("parameters", {}).get("required", []) or [])
+            missing = [key for key in required if key not in args or args[key] is None]
+            grounded = [
+                key for key in required if key in args and self._is_grounded(
+                    args[key], context_text, key_name=key, dialogue_state=dialogue_state
+                )
+            ]
+            paths.append({
+                "tool": name,
+                "required": required,
+                "grounded_required": grounded,
+                "missing_required": missing,
+            })
+        unfounded = self._unfounded_required(
+            tool_calls, tools, context_text, dialogue_state=dialogue_state
+        )
+        return {
+            "mode": "tool" if paths else "non_tool",
+            "paths": paths,
+            "unfounded_required": unfounded,
+            "blocked": bool(unfounded),
+        }
 
     def _authored_clarification(self, inference_data, content):
         '''
@@ -1421,23 +1429,6 @@ class BaseHandler:
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             dialogue_state = inference_data.get("dialogue_state")
-            # Required-slot clarification wins over a drafted call.  The
-            # question remains model-authored, preserving the existing
-            # ask-instead-of-guess behavior instead of synthesizing a prompt
-            # heuristic response in the handler.
-            if (dialogue_state.get("action_commitment") == "ask_user_for_required_parameters"
-                    and tool_calls):
-                clarification = self._authored_clarification(inference_data, content)
-                if clarification:
-                    inference_log.setdefault("commitment_notes", []).append({
-                        "step": step,
-                        "mode": "ask_user_for_required_parameters",
-                        "missing": dialogue_state.get("missing_required_values", {}),
-                        "suppressed_calls": [tc.get("function", {}).get("name") for tc in tool_calls],
-                    })
-                    content, tool_calls = clarification, None
-                    model_response_data["content"] = content
-                    model_response_data["tool_calls"] = None
             if tool_calls is not None:
                 # Schema cleaner + receipt gate (ungrounded optionals dropped)
                 cleaned_tool_calls = []
@@ -1458,13 +1449,20 @@ class BaseHandler:
                 tool_calls = self._topological_sort_tool_calls(cleaned_tool_calls, tools)
                 model_response_data["tool_calls"] = tool_calls
 
+                selected_commitment = self._assess_selected_commitment(
+                    tool_calls, tools, json.dumps(messages, ensure_ascii=False), dialogue_state=dialogue_state
+                )
+                inference_log.setdefault("commitment_notes", []).append({
+                    "step": step,
+                    "selected_commitment": selected_commitment,
+                })
+
                 # Ask-instead-of-guess: if a REQUIRED value was invented rather
-                # than taken from the conversation or dialogue state provenance,
-                # hand the turn back to the user rather than acting on the guess.
+                # than taken from the conversation or the selected commitment's
+                # provenance, hand the turn back to the user rather than acting
+                # on the guess.  Global state missingness is never sufficient.
                 if self.ask_gate:
-                    unfounded = self._unfounded_required(
-                        tool_calls, tools, json.dumps(messages, ensure_ascii=False), dialogue_state=dialogue_state
-                    )
+                    unfounded = selected_commitment["unfounded_required"]
                     if unfounded:
                         clarification = self._authored_clarification(inference_data, content)
                         if clarification:
