@@ -1709,7 +1709,6 @@ class BaseHandler:
             inference_data = {
                 "test_entry_id": test_entry_id,
                 "task_idx": task_idx,
-                "step": step,
                 "tools": tools,
                 "messages": messages,
                 "answer_list": answer_list,
