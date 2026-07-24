@@ -552,27 +552,21 @@ class BaseHandler:
 
     def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
-        Return a *preference*, never a global clarification verdict.
-
-        A state can identify several relevant tools with incompatible required
-        slots.  Treating any missing slot on any such tool as evidence that the
-        user must clarify was the source of false asks (for example, a request
-        for Ontario, Canada was blocked by unrelated schema labels such as
-        ``countryCode``).  Only the generated, selected tool path may establish
-        that it is blocked; see _assess_selected_commitment.
+        Strict Elimination Gate.
+        Answers commitment mode without soft scoring or candidate ranking:
+          - 'grounded_tool': 1+ tools have 100% required parameters grounded.
+          - 'under_specified': Required parameter missing for tool intent.
+          - 'ambiguous_chat': No tool intent present.
         '''
         if dialogue_state and isinstance(dialogue_state, dict):
-            plausible_tools = dialogue_state.get("plausible_tools", [])
-            if plausible_tools:
-                return {
-                    "action_class": "tool_preferred",
-                    "target_tools": plausible_tools,
-                    "highest_missing_slot": None,
-                }
+            mode = dialogue_state.get("current_commitment_mode") or "ambiguous_chat"
+            feasible = dialogue_state.get("feasible_tools", [])
+            unresolved = dialogue_state.get("unresolved_required_slots", {})
+            clarify_slot = dialogue_state.get("clarify_slot")
             return {
-                "action_class": "ambiguous_chat",
-                "target_tools": [],
-                "highest_missing_slot": None,
+                "action_class": mode,
+                "target_tools": feasible if mode == "grounded_tool" else list(unresolved.keys()),
+                "highest_missing_slot": clarify_slot,
             }
 
         ctx_text = json.dumps(messages, ensure_ascii=False).lower()
@@ -597,10 +591,9 @@ class BaseHandler:
             }
 
         fully_grounded_tools = [t for t, status in tool_status.items() if status["fully_grounded"]]
-        
         if len(fully_grounded_tools) >= 1:
             return {
-                "action_class": "tool_preferred",
+                "action_class": "grounded_tool",
                 "target_tools": fully_grounded_tools,
                 "highest_missing_slot": None
             }
@@ -650,50 +643,46 @@ class BaseHandler:
         mcsg_state = self._minimum_commitment_gate(tools, messages, dialogue_state=dialogue_state)
         consensus_log["mcsg_state"] = mcsg_state
 
-        if not vote_counts:
+        # Filter candidates before voting according to elimination gate
+        valid_candidates = []
+        valid_signatures = []
+        feas_set = set((dialogue_state or {}).get("feasible_tools") or [])
+
+        for c, s in zip(candidates, signatures):
+            if s == ("empty",):
+                continue
+            # 1. Action class elimination
+            if mcsg_state["action_class"] == "grounded_tool" and s == ("text",):
+                continue
+            if mcsg_state["action_class"] == "ambiguous_chat" and s[0] == "tools":
+                continue
+            # 2. Feasibility elimination for tool calls
+            if s[0] == "tools" and feas_set:
+                if any(tname not in feas_set for tname in s[1:]):
+                    continue
+            valid_candidates.append(c)
+            valid_signatures.append(s)
+
+        if not valid_signatures:
+            valid_candidates = [c for c, s in zip(candidates, signatures) if s != ("empty",)]
+            valid_signatures = [s for s in signatures if s != ("empty",)]
+
+        if not valid_signatures:
             chosen = anchor
         else:
+            vote_counts = Counter(valid_signatures)
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
-
-            # A plausible user goal biases an otherwise tied vote toward an
-            # information-advancing tool.  It never suppresses a generated
-            # clarification: only the selected tool path can prove whether an
-            # indispensable value is missing.
-            if mcsg_state["action_class"] == "tool_preferred":
-                filtered_winners = [s for s in winners if s[0] == "tools"]
-                if filtered_winners:
-                    winners = filtered_winners
-
-            # Prioritize candidate signatures matching feasible_tools from dialogue_state
-            if len(winners) > 1 and dialogue_state and dialogue_state.get("feasible_tools"):
-                feas_tools = set(dialogue_state["feasible_tools"])
-                feasible_winners = [
-                    s for s in winners if s[0] == "tools" and len(s) > 1 and s[1] in feas_tools
-                ]
-                if feasible_winners:
-                    winners = feasible_winners
 
             if len(winners) == 1:
                 winning_signature = winners[0]
             else:
-                # MCSG Constrained Voting: If MCSG indicates ambiguous_chat, prefer text signature
-                if mcsg_state["action_class"] == "ambiguous_chat" and ("text",) in winners:
-                    winning_signature = ("text",)
-                else:
-                    def mcsg_rank_score(sig):
-                        clust = [c for c, s in zip(candidates, signatures) if s == sig]
-                        return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
-                    # Session continuity is deliberately the last sort key: it
-                    # cannot override schema/receipt correctness.
-                    state_family = (dialogue_state or {}).get("last_successful_tool_family")
-                    def continuity_penalty(sig):
-                        if not state_family or sig[0] != "tools":
-                            return 0
-                        return 0 if any(self._tool_family(name) == state_family for name in sig[1:]) else 1
-                    winning_signature = min(winners, key=lambda sig: (mcsg_rank_score(sig), continuity_penalty(sig)))
+                def pure_rank_score(sig):
+                    clust = [c for c, s in zip(valid_candidates, valid_signatures) if s == sig]
+                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
+                winning_signature = min(winners, key=pure_rank_score)
 
-            cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
+            cluster = [c for c, s in zip(valid_candidates, valid_signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
             consensus_log["cluster_size"] = len(cluster)
 
@@ -1087,11 +1076,7 @@ class BaseHandler:
             required = list(schema.get("required", []) or [])
             descriptor = " ".join([name, func.get("description", "")] + required)
             relevance = len(user_tokens & self._state_tokens(descriptor))
-            # Continuity makes a follow-up tool relevant, but never certifies a
-            # missing slot; it only keeps a multi-step workflow coherent.
-            if self._tool_family(name) == last_successful_tool_family:
-                relevance += 1
-            if relevance == 0:
+            if relevance == 0 and not required:
                 continue
             missing = []
             for slot in required:
@@ -1108,28 +1093,40 @@ class BaseHandler:
                 "missing": missing, "relevance": relevance,
             }
 
-        # Relevant tools are candidate commitments, not a global schema gate.
-        # A candidate may contain a required field whose label is absent even
-        # though the user supplied its value semantically (BBC -> source,
-        # CPU2023 -> partNumber).  The selected tool call, with its actual
-        # arguments and receipts, is the only place where executability can be
-        # decided safely.
         plausible_tools = list(tool_status)
         feasible_tools = [name for name, status in tool_status.items() if not status["missing"]]
         unresolved_required_slots = {
             name: status["missing"] for name, status in tool_status.items() if status["missing"]
         }
         clarify_slot = None
-        # The mode is intentionally a tool-first preference rather than a
-        # pre-generation ask verdict.  Clarification is emitted only after a
-        # selected tool path has been audited below.
-        commitment = "tool" if plausible_tools else "chat"
-        if last_successful_tool_name and commitment == "tool":
-            workflow_stage = "continue_tool_workflow"
-        elif commitment == "tool":
-            workflow_stage = "execute"
+        if unresolved_required_slots:
+            missing_counter = Counter()
+            for t, m_slots in unresolved_required_slots.items():
+                for s in m_slots:
+                    missing_counter[s] += 1
+            if missing_counter:
+                clarify_slot = missing_counter.most_common(1)[0][0]
+
+        if feasible_tools:
+            current_commitment_mode = "grounded_tool"
+        elif unresolved_required_slots:
+            current_commitment_mode = "under_specified"
         else:
-            workflow_stage = "respond"
+            current_commitment_mode = "ambiguous_chat"
+
+        last_action_class = None
+        for msg in reversed(messages or []):
+            if msg.get("role") == "assistant":
+                last_action_class = "tool" if msg.get("tool_calls") else "text"
+                break
+
+        workflow_stage = "dialogue"
+        if last_action_class == "tool":
+            workflow_stage = "tool_execution"
+        elif current_commitment_mode == "under_specified":
+            workflow_stage = "clarify_needed"
+        elif current_commitment_mode == "grounded_tool":
+            workflow_stage = "tool_ready"
 
         return {
             "current_goal": current_user_message,
@@ -1138,14 +1135,15 @@ class BaseHandler:
             "known_facts": known_facts,
             "provenance_by_slot": provenance_by_slot,
             "missing_required_values": unresolved_required_slots,
-            "unresolved_required_slots": unresolved_required_slots,  # compatibility
+            "unresolved_required_slots": unresolved_required_slots,
             "last_successful_tool_name": last_successful_tool_name,
             "last_successful_tool_family": last_successful_tool_family,
             "feasible_tool_families": sorted({tool_status[t]["family"] for t in feasible_tools}),
             "feasible_tools": feasible_tools,
             "plausible_tools": plausible_tools,
             "clarify_slot": clarify_slot,
-            "action_commitment": commitment,
+            "current_commitment_mode": current_commitment_mode,
+            "action_commitment": current_commitment_mode,
             "tool_status": tool_status,
         }
 
