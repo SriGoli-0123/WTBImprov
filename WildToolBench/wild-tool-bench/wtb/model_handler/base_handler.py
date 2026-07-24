@@ -214,6 +214,22 @@ class BaseHandler:
         if value is None:
             return True
 
+        # Latent task state is the authoritative receipt registry.  Text
+        # containment is deliberately a fallback: tool observations often
+        # surface values under a different label than the next tool schema.
+        if dialogue_state and isinstance(dialogue_state, dict):
+            grounded_values = dialogue_state.get("grounded_values", {})
+            val_str = str(value).strip().lower()
+            key_lower = str(key_name).lower() if key_name else None
+            if key_lower and key_lower in grounded_values:
+                known = str(grounded_values[key_lower].get("value", "")).strip().lower()
+                if val_str and known and (val_str == known or val_str in known or known in val_str):
+                    return True
+            for receipt in grounded_values.values():
+                known = str(receipt.get("value", "")).strip().lower()
+                if val_str and known and (val_str == known or val_str in known or known in val_str):
+                    return True
+
         if key_name and dialogue_state and isinstance(dialogue_state, dict):
             prov_map = dialogue_state.get("provenance_by_slot", {})
             key_lower = str(key_name).lower()
@@ -547,6 +563,22 @@ class BaseHandler:
             unresolved = dialogue_state.get("unresolved_required_slots", {})
             clarify_slot = dialogue_state.get("clarify_slot")
 
+            # The latent-state commitment is intentionally narrow and local to
+            # this turn.  It does not predict future actions or replace voting.
+            commitment = dialogue_state.get("action_commitment")
+            if commitment == "ask_user_for_required_parameters":
+                return {
+                    "action_class": "under_specified",
+                    "target_tools": list(unresolved.keys()),
+                    "highest_missing_slot": clarify_slot,
+                }
+            if commitment == "tool":
+                return {
+                    "action_class": "grounded_tool",
+                    "target_tools": feasible_tools,
+                    "highest_missing_slot": None,
+                }
+
             if len(feasible_tools) >= 1:
                 return {
                     "action_class": "grounded_tool",
@@ -660,10 +692,15 @@ class BaseHandler:
             best_count = max(vote_counts.values())
             winners = [s for s, v in vote_counts.items() if v == best_count]
 
-            # Structural Exclusion Hard Gate (MCSG Refinement: IGAR v24)
-            if mcsg_state["action_class"] in ("under_specified", "grounded_tool"):
-                # Exclude plain text signatures when required slots are missing OR when a tool is 100% grounded
-                filtered_winners = [s for s in winners if s != ("text",)]
+            # Commitment is a hard action-class guard only for this turn.  A
+            # missing required value must clarify; an executable state should
+            # use a tool if any candidate produced one.
+            if mcsg_state["action_class"] == "under_specified":
+                filtered_winners = [s for s in winners if s == ("text",)]
+                if filtered_winners:
+                    winners = filtered_winners
+            elif mcsg_state["action_class"] == "grounded_tool":
+                filtered_winners = [s for s in winners if s[0] == "tools"]
                 if filtered_winners:
                     winners = filtered_winners
 
@@ -686,7 +723,14 @@ class BaseHandler:
                     def mcsg_rank_score(sig):
                         clust = [c for c, s in zip(candidates, signatures) if s == sig]
                         return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
-                    winning_signature = min(winners, key=mcsg_rank_score)
+                    # Session continuity is deliberately the last sort key: it
+                    # cannot override schema/receipt correctness.
+                    state_family = (dialogue_state or {}).get("last_successful_tool_family")
+                    def continuity_penalty(sig):
+                        if not state_family or sig[0] != "tools":
+                            return 0
+                        return 0 if any(self._tool_family(name) == state_family for name in sig[1:]) else 1
+                    winning_signature = min(winners, key=lambda sig: (mcsg_rank_score(sig), continuity_penalty(sig)))
 
             cluster = [c for c, s in zip(candidates, signatures) if s == winning_signature]
             consensus_log["winning_signature"] = list(winning_signature)
@@ -722,6 +766,7 @@ class BaseHandler:
         messages = inference_data["messages"]
         checker = ToolArgsChecker()
         context_text = json.dumps(messages, ensure_ascii=False)
+        dialogue_state = inference_data.get("dialogue_state")
         history_calls = set()
         for m in messages:
             if m.get("role") == "assistant" and m.get("tool_calls"):
@@ -765,7 +810,8 @@ class BaseHandler:
                     break
             if isinstance(parsed, dict):
                 for key, value in parsed.items():
-                    if key not in required and not self._is_grounded(value, context_text):
+                    if key not in required and not self._is_grounded(
+                            value, context_text, key_name=key, dialogue_state=dialogue_state):
                         total += 1
                         detail.append(f"{name}.{key}: optional argument with no basis in the conversation")
             if (name, self._canon(parsed)) in history_calls:
@@ -957,13 +1003,200 @@ class BaseHandler:
 
         return [f"{position}{k}: {s_v}" for (k, s_v), position in entities.items()]
 
+    _STATE_STOPWORDS = {
+        "a", "an", "and", "for", "from", "get", "in", "is", "of", "on", "or",
+        "the", "to", "with", "your", "you", "user", "tool", "data", "info",
+    }
+
+    @classmethod
+    def _tool_family(cls, tool_name):
+        """A stable, schema-free family label used only as a tie-breaker."""
+        words = re.findall(r"[a-z0-9]+", (tool_name or "").lower())
+        generic_verbs = {"get", "list", "search", "find", "fetch", "create", "update", "delete", "add", "remove", "send"}
+        return next((word for word in words if word not in generic_verbs), words[0] if words else "unknown")
+
+    @classmethod
+    def _state_tokens(cls, text):
+        return {
+            token for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if len(token) > 1 and token not in cls._STATE_STOPWORDS
+        }
+
+    def _build_latent_task_state(self, tools, messages, history_answer_lists=None):
+        """Build a per-step, provenance-first task state from visible history only.
+
+        This intentionally summarizes evidence rather than predicting later turns.
+        It is re-run after each assistant/tool exchange by the evaluation loop.
+        """
+        known_facts = self._extract_observation_facts(history_answer_lists) if history_answer_lists else []
+        provenance_by_slot = {}
+        grounded_values = {}
+        last_successful_tool_name = None
+        last_successful_tool_family = None
+        current_user_message = ""
+        pending_tool_names = []
+
+        def record(key, value, source, turn):
+            if isinstance(value, bool) or value is None:
+                return
+            value = str(value).strip()
+            if not value:
+                return
+            receipt = {"value": value, "source": source, "turn": turn}
+            key = str(key).lower()
+            provenance_by_slot[key] = receipt
+            grounded_values[key] = receipt
+
+        def walk_payload(payload, source, turn):
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                        record(key, value, source, turn)
+                    elif isinstance(value, (dict, list)):
+                        walk_payload(value, source, turn)
+            elif isinstance(payload, list):
+                for item in payload:
+                    walk_payload(item, source, turn)
+
+        for turn_idx, msg in enumerate(messages or []):
+            role = msg.get("role", "")
+            content = msg.get("content")
+            if role == "user" and isinstance(content, str):
+                current_user_message = content
+            if role == "tool":
+                try:
+                    walk_payload(json.loads(content) if isinstance(content, str) else content,
+                                 "tool_observation", turn_idx)
+                except Exception:
+                    pass
+                if pending_tool_names:
+                    # A tool message is the benchmark's visible receipt that
+                    # the immediately preceding call completed.
+                    last_successful_tool_name = pending_tool_names.pop(0)
+                    last_successful_tool_family = self._tool_family(last_successful_tool_name)
+            elif isinstance(content, str):
+                # Token receipts retain user/assistant wording without inventing
+                # a semantic mapping that was not present in the transcript.
+                for token in self._state_tokens(content):
+                    grounded_values.setdefault(token, {
+                        "value": token, "source": role or "message", "turn": turn_idx
+                    })
+            if role == "assistant" and msg.get("tool_calls"):
+                pending_tool_names = []
+                for tc in msg["tool_calls"]:
+                    name = tc.get("function", {}).get("name")
+                    if name:
+                        pending_tool_names.append(name)
+
+        for fact in known_facts:
+            if ":" in fact:
+                key, value = fact.split(":", 1)
+                record(key.replace("[", " ").replace("]", " ").strip(), value,
+                       "ledger_fact", 0)
+
+        user_tokens = self._state_tokens(current_user_message)
+        # Conservative slot binding for values that are plainly supplied but
+        # whose schema label is absent from natural language ("in Phoenix" for
+        # `city`).  These are receipts from the current user message, never
+        # generated defaults.  The narrow common-slot list avoids treating an
+        # arbitrary word as evidence for an unrelated required field.
+        proper_values = re.findall(r"\b[A-Z][A-Za-z0-9_-]*(?:\s+[A-Z][A-Za-z0-9_-]*)*\b", current_user_message)
+        proper_values = [v for v in proper_values if v.lower() not in {"i", "please", "can", "could", "check", "set"}]
+        email_values = re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", current_user_message)
+        id_values = re.findall(r"\b(?:[A-Za-z]+[-_]?)?\d{3,}\b", current_user_message)
+        date_values = re.findall(
+            r"\b(?:today|tomorrow|yesterday|tonight|next\s+\w+|this\s+\w+|"
+            r"\d{4}-\d{1,2}-\d{1,2}|[A-Z][a-z]+\s+\d{1,2})\b", current_user_message,
+            re.IGNORECASE,
+        )
+        slot_value_hints = {
+            "city": proper_values, "location": proper_values, "country": proper_values,
+            "name": proper_values, "recipient": proper_values, "recipient_name": proper_values,
+            "email": email_values, "email_address": email_values,
+            "id": id_values, "user_id": id_values, "order_id": id_values,
+            "date": date_values, "start_date": date_values, "end_date": date_values,
+        }
+        tool_status = {}
+        for tool in tools or []:
+            func = tool.get("function", {})
+            name = func.get("name")
+            if not name:
+                continue
+            schema = func.get("parameters", {}) or {}
+            required = list(schema.get("required", []) or [])
+            descriptor = " ".join([name, func.get("description", "")] + required)
+            relevance = len(user_tokens & self._state_tokens(descriptor))
+            # Continuity makes a follow-up tool relevant, but never certifies a
+            # missing slot; it only keeps a multi-step workflow coherent.
+            if self._tool_family(name) == last_successful_tool_family:
+                relevance += 1
+            if relevance == 0:
+                continue
+            missing = []
+            for slot in required:
+                slot_key = slot.lower()
+                slot_tokens = self._state_tokens(slot)
+                hints = slot_value_hints.get(slot_key, [])
+                if hints and slot_key not in grounded_values:
+                    record(slot_key, hints[-1], "user_message", len(messages) - 1)
+                slot_known = slot_key in grounded_values or bool(slot_tokens & set(grounded_values))
+                if not slot_known:
+                    missing.append(slot)
+            tool_status[name] = {
+                "family": self._tool_family(name), "required": required,
+                "missing": missing, "relevance": relevance,
+            }
+
+        feasible_tools = [name for name, status in tool_status.items() if not status["missing"]]
+        unresolved_required_slots = {
+            name: status["missing"] for name, status in tool_status.items() if status["missing"]
+        }
+        clarify_slot = None
+        if unresolved_required_slots and not feasible_tools:
+            missing_counts = Counter(
+                slot for slots in unresolved_required_slots.values() for slot in slots
+            )
+            clarify_slot = missing_counts.most_common(1)[0][0]
+
+        if feasible_tools:
+            commitment = "tool"
+        elif clarify_slot:
+            commitment = "ask_user_for_required_parameters"
+        else:
+            commitment = "chat"
+        if last_successful_tool_name and commitment == "tool":
+            workflow_stage = "continue_tool_workflow"
+        elif commitment == "ask_user_for_required_parameters":
+            workflow_stage = "collect_required_parameters"
+        elif commitment == "tool":
+            workflow_stage = "execute"
+        else:
+            workflow_stage = "respond"
+
+        return {
+            "current_goal": current_user_message,
+            "current_workflow_stage": workflow_stage,
+            "grounded_values": grounded_values,
+            "known_facts": known_facts,
+            "provenance_by_slot": provenance_by_slot,
+            "missing_required_values": unresolved_required_slots,
+            "unresolved_required_slots": unresolved_required_slots,  # compatibility
+            "last_successful_tool_name": last_successful_tool_name,
+            "last_successful_tool_family": last_successful_tool_family,
+            "feasible_tool_families": sorted({tool_status[t]["family"] for t in feasible_tools}),
+            "feasible_tools": feasible_tools,
+            "clarify_slot": clarify_slot,
+            "action_commitment": commitment,
+            "tool_status": tool_status,
+        }
+
     def _build_dialogue_state(self, tools, messages, history_answer_lists=None):
         '''
         Stateful Dialogue State Builder.
-        
+
         Indexes known facts and slot provenance across prior tool observations,
         ledger entries, user messages, and system context.
-        
+
         Returns:
             {
                 "known_facts": list of surfaced observation facts,
@@ -973,107 +1206,9 @@ class BaseHandler:
                 "clarify_slot": highest coverage missing required slot,
             }
         '''
-        known_facts = self._extract_observation_facts(history_answer_lists) if history_answer_lists else []
-        provenance_by_slot = {}
-        
-        ctx_text = json.dumps(messages or [], ensure_ascii=False).lower()
-        
-        for turn_idx, msg in enumerate(messages or []):
-            role = msg.get("role", "")
-            content = msg.get("content")
-            if not content:
-                continue
-            
-            source_type = "user" if role == "user" else ("assistant" if role == "assistant" else "tool")
-            
-            if role == "tool":
-                try:
-                    payload = json.loads(content) if isinstance(content, str) else content
-                    def walk_payload(obj):
-                        if isinstance(obj, dict):
-                            for k, v in obj.items():
-                                if isinstance(v, (str, int, float)) and not isinstance(v, bool):
-                                    val_str = str(v).strip()
-                                    if val_str:
-                                        provenance_by_slot[str(k).lower()] = {
-                                            "value": val_str,
-                                            "source": "tool_observation",
-                                            "turn": turn_idx
-                                        }
-                                elif isinstance(v, (dict, list)):
-                                    walk_payload(v)
-                        elif isinstance(obj, list):
-                            for item in obj:
-                                walk_payload(item)
-                    walk_payload(payload)
-                except Exception:
-                    pass
-            elif isinstance(content, str):
-                for token in re.findall(r'[a-zA-Z0-9_\-]+', content.lower()):
-                    if len(token) >= 2:
-                        provenance_by_slot.setdefault(token, {
-                            "value": token,
-                            "source": source_type,
-                            "turn": turn_idx
-                        })
-
-        for fact in known_facts:
-            if ":" in fact:
-                parts = fact.split(":", 1)
-                k = parts[0].replace("[", " ").replace("]", " ").strip().lower()
-                v = parts[1].strip()
-                provenance_by_slot[k] = {
-                    "value": v,
-                    "source": "ledger_fact",
-                    "turn": 0
-                }
-
-        slot_coverage = Counter()
-        unresolved_required_slots = {}
-        feasible_tools = []
-
-        for t in (tools or []):
-            func = t.get("function", {})
-            tname = func.get("name")
-            if not tname:
-                continue
-            params = func.get("parameters", {}) or {}
-            req = set(params.get("required", []) or [])
-            for slot in req:
-                slot_coverage[slot] += 1
-
-            missing = []
-            for slot in req:
-                slot_lower = slot.lower()
-                is_grounded = (
-                    slot_lower in provenance_by_slot or
-                    slot_lower in ctx_text or
-                    self._is_abbreviation_of_context(slot, ctx_text)
-                )
-                if not is_grounded:
-                    missing.append(slot)
-
-            if missing:
-                unresolved_required_slots[tname] = missing
-            else:
-                feasible_tools.append(tname)
-
-        clarify_slot = None
-        if unresolved_required_slots:
-            missing_slots_counter = Counter()
-            for t, m_slots in unresolved_required_slots.items():
-                for s in m_slots:
-                    missing_slots_counter[s] += slot_coverage[s]
-            if missing_slots_counter:
-                clarify_slot = missing_slots_counter.most_common(1)[0][0]
-
-        return {
-            "known_facts": known_facts,
-            "provenance_by_slot": provenance_by_slot,
-            "unresolved_required_slots": unresolved_required_slots,
-            "feasible_tools": feasible_tools,
-            "clarify_slot": clarify_slot
-        }
+        # Compatibility name retained for existing callers; the latent state is
+        # the single source of truth for all new decisions.
+        return self._build_latent_task_state(tools, messages, history_answer_lists)
 
     def _unfounded_required(self, tool_calls, tools, context_text, dialogue_state=None):
         '''
@@ -1211,6 +1346,7 @@ class BaseHandler:
                 "tools": tools,
                 "messages": messages,
                 "answer_list": answer_list,
+                "history_answer_lists": history_answer_lists,
                 "dialogue_state": dialogue_state
             }
             result_data = self.inference_and_eval_multi_step(inference_data)
@@ -1264,6 +1400,13 @@ class BaseHandler:
         input_token_count = []
         output_token_count = []
         while True:
+            # Recompute from the transcript that is actually visible at this
+            # step, including gold-history observations and this task's prior
+            # tool results.  No future task/step is consulted.
+            inference_data["dialogue_state"] = self._build_latent_task_state(
+                tools, messages, inference_data.get("history_answer_lists")
+            )
+            dialogue_state = inference_data["dialogue_state"]
             print("-" * 100, flush=True)
             print(
                 f"ID: {test_entry_id.replace('wild_tool_bench_', '')}, Task: {task_idx}, Step: {step}", flush=True
@@ -1278,6 +1421,23 @@ class BaseHandler:
             content = model_response_data["content"]
             tool_calls = model_response_data["tool_calls"]
             dialogue_state = inference_data.get("dialogue_state")
+            # Required-slot clarification wins over a drafted call.  The
+            # question remains model-authored, preserving the existing
+            # ask-instead-of-guess behavior instead of synthesizing a prompt
+            # heuristic response in the handler.
+            if (dialogue_state.get("action_commitment") == "ask_user_for_required_parameters"
+                    and tool_calls):
+                clarification = self._authored_clarification(inference_data, content)
+                if clarification:
+                    inference_log.setdefault("commitment_notes", []).append({
+                        "step": step,
+                        "mode": "ask_user_for_required_parameters",
+                        "missing": dialogue_state.get("missing_required_values", {}),
+                        "suppressed_calls": [tc.get("function", {}).get("name") for tc in tool_calls],
+                    })
+                    content, tool_calls = clarification, None
+                    model_response_data["content"] = content
+                    model_response_data["tool_calls"] = None
             if tool_calls is not None:
                 # Schema cleaner + receipt gate (ungrounded optionals dropped)
                 cleaned_tool_calls = []
@@ -1333,7 +1493,8 @@ class BaseHandler:
             inference_log[f"step_{step}"] = {
                 "inference_input": {
                     "messages": deepcopy(messages),
-                    "tools": tools
+                    "tools": tools,
+                    "latent_task_state": deepcopy(dialogue_state),
                 },
                 "inference_output": {
                     "reasoning_content": reasoning_content,

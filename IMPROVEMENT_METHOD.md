@@ -108,6 +108,23 @@ known, never what to do — so it cannot narrow the model's decision policy.
 Failures degrade gracefully (ledger generation errors are skipped; a `NONE`
 ledger is not injected).
 
+### 4. Per-turn latent task state
+
+`base_handler.py` now rebuilds a compact inference-time state before every
+step from the current user message, visible assistant/tool history, prior tool
+outputs, surfaced facts, and tool schemas. It records the current goal,
+workflow stage, provenance-backed values, missing required values, the last
+successful tool and family, feasible tool families, and a local commitment
+mode (`chat`, `ask_user_for_required_parameters`, or `tool`). It neither
+predicts future turns nor adds a prompt-only policy.
+
+Missing required values make clarification win; executable states prefer a tool
+call. Tool-family continuity is used only as a consensus tie-breaker after the
+existing schema and grounding checks. The state is written under every
+`inference_log.step_k.inference_input.latent_task_state` for inspection.
+Argument receipts consult this provenance first and use text containment only
+when no state receipt exists.
+
 ## Configuration
 
 | Env var | Default | Meaning |
