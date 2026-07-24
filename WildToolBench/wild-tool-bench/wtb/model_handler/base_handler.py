@@ -744,42 +744,55 @@ class BaseHandler:
             "highest_missing_slot": None
         }
 
-    def _interaction_mode_gate(self, messages, dialogue_state, tools):
+    def _has_explicit_tool_intent(self, user_message, tools):
         '''
-        Instruction 1: Hard Interaction Gate before CGCC.
-        Decides strictly one of three modes: 'chat', 'clarify', or 'tool'.
-        Does NOT rank tools. Does NOT score candidates.
+        Helper: Checks if user message contains explicit tool action intent or domain keywords.
         '''
-        if dialogue_state and isinstance(dialogue_state, dict):
-            commitment_mode = dialogue_state.get("current_commitment_mode") or dialogue_state.get("interaction_mode")
-            if commitment_mode == "grounded_tool":
-                return "tool", "Grounded tool commitment found in dialogue state"
-            elif commitment_mode == "under_specified":
-                return "clarify", "Missing required parameters for target tool intent"
-            elif commitment_mode == "ambiguous_chat":
-                return "chat", "No grounded tool intent present in dialogue state"
-
-        ctx_text = json.dumps(messages, ensure_ascii=False).lower()
-        tool_status = {}
+        low_msg = user_message.lower()
+        tool_keywords = {
+            "search", "find", "book", "get", "list", "show", "check", "set",
+            "calculate", "convert", "translate", "fetch", "query", "filter", "sort"
+        }
+        words = set(re.findall(r"\b[a-z]+\b", low_msg))
+        if words & tool_keywords:
+            return True
         for t in (tools or []):
-            func = t.get("function", {})
-            tname = func.get("name")
-            if not tname:
-                continue
-            params = func.get("parameters", {}) or {}
-            req = set(params.get("required", []) or [])
-            missing = {s for s in req if s.lower() not in ctx_text}
-            tool_status[tname] = {"missing": missing, "fully_grounded": len(missing) == 0}
+            name = t.get("function", {}).get("name", "").lower()
+            if name and name in low_msg:
+                return True
+        return False
 
-        grounded = [t for t, st in tool_status.items() if st["fully_grounded"]]
-        if grounded:
-            return "tool", f"Grounded tools found: {grounded}"
-        
-        has_missing_req = any(st["missing"] for st in tool_status.values() if len(st["missing"]) < len(st.get("required", [])))
-        if has_missing_req:
-            return "clarify", "Under-specified turn with missing required parameter"
+    def _interaction_mode_gate(self, messages, dialogue_state, tools, is_step_zero=False):
+        '''
+        Stricter Front Interaction Gate before CGCC.
+        Defaults to CHAT unless:
+          1) Explicit tool intent exists in user turn, AND
+          2) Grounded required arguments exist in dialogue_state.
+        On step 0 (is_step_zero=True): Extra strict!
+        '''
+        user_msgs = [m for m in (messages or []) if m.get("role") == "user"]
+        current_user_msg = user_msgs[-1].get("content", "").strip() if user_msgs else ""
+        has_intent = self._has_explicit_tool_intent(current_user_msg, tools)
 
-        return "chat", "Default chat mode for conversational/ambiguous query"
+        feasible_tools = (dialogue_state or {}).get("feasible_tools", [])
+        unresolved = (dialogue_state or {}).get("unresolved_required_slots", {})
+
+        # Step 0 Extra Strict Gate: Protect Chat & First Turn
+        if is_step_zero:
+            if has_intent and feasible_tools:
+                return "tool", f"Step 0 explicit intent + feasible tools: {feasible_tools}"
+            elif unresolved and has_intent:
+                return "clarify", "Step 0 explicit tool intent with missing required parameter"
+            else:
+                return "chat", "Step 0 default chat protection"
+
+        # Subsequent Steps Gate
+        if feasible_tools and (has_intent or len(messages) > 3):
+            return "tool", f"Grounded feasible tools found: {feasible_tools}"
+        elif unresolved and has_intent:
+            return "clarify", "Missing required parameter for target tool intent"
+
+        return "chat", "Default chat protection mode"
 
     def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
@@ -833,33 +846,39 @@ class BaseHandler:
 
     def _consensus_generate(self, inference_data):
         '''
-        Gated CGCC: Interaction Mode Gate branches execution before running CGCC.
-        Only runs multi-sample CGCC candidate competition for 'tool' turns.
+        v24-Gated CGCC: Stricter front-gating before CGCC runs.
+        Only runs multi-sample CGCC candidate competition for confirmed 'tool' turns on feasible tool subset.
         Bypasses CGCC for 'chat' and 'clarify' turns.
         '''
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
         dialogue_state = inference_data.get("dialogue_state")
+        step = inference_data.get("step", 0)
+        is_step_zero = (step == 0)
 
-        # Instruction 1 & 2: Hard Interaction Mode Gate
-        mode, reason = self._interaction_mode_gate(messages, dialogue_state, tools)
-        print(f"[G-CGCC Gate] Selected Mode: '{mode.upper()}' | Reason: {reason}", flush=True)
+        # 1 & 2: Stricter Front Interaction Mode Gate
+        mode, reason = self._interaction_mode_gate(messages, dialogue_state, tools, is_step_zero=is_step_zero)
+        print(f"[v24-GCGCC Gate] Step {step} | Selected Mode: '{mode.upper()}' | Reason: {reason}", flush=True)
 
-        # Mode: 'chat' -> Bypass CGCC tool generation! Return clean text response
+        # Mode: 'chat' -> Bypass CGCC tool generation! Return clean text response with unified schema
         if mode == "chat":
-            print("[G-CGCC] Bypassing CGCC multi-sample tool generation -> Running CHAT path", flush=True)
+            print("[v24-GCGCC] Running CHAT path (CGCC bypassed)", flush=True)
             api_response, latency = self._request_tool_call(inference_data)
             anchor = self._parse_api_response(api_response)
             anchor["latency"] = latency
-            if anchor.get("tool_calls"):
-                anchor["tool_calls"] = None
-                if not anchor.get("content"):
-                    anchor["content"] = "I can help answer your question directly."
-            return self._maybe_repair(anchor, inference_data)
+            return {
+                "role": "assistant",
+                "reasoning_content": anchor.get("reasoning_content"),
+                "content": anchor.get("content") or "I can answer your request directly.",
+                "tool_calls": None,
+                "latency": latency,
+                "input_token": anchor.get("input_token", 0),
+                "output_token": anchor.get("output_token", 0),
+            }
 
-        # Mode: 'clarify' -> Bypass CGCC tool generation! Emit concise clarification prompt
+        # Mode: 'clarify' -> Bypass CGCC tool generation! Emit concise clarification prompt with unified schema
         if mode == "clarify":
-            print("[G-CGCC] Bypassing CGCC multi-sample tool generation -> Running CLARIFY path", flush=True)
+            print("[v24-GCGCC] Running CLARIFY path (CGCC bypassed)", flush=True)
             clarify_slot = (dialogue_state or {}).get("clarify_slot") or "details"
             clarification_text = f"Could you please specify the {clarify_slot} so I can assist you accurately?"
             return {
@@ -872,20 +891,38 @@ class BaseHandler:
                 "output_token": 0,
             }
 
-        # Mode: 'tool' -> Execute full CGCC Multi-Sample Competition Engine
-        print("[G-CGCC] Running CGCC Multi-Sample Candidate Competition Engine", flush=True)
-        api_response, latency = self._request_tool_call(inference_data)
+        # MODE: 'tool' -> Filter tools to FEASIBLE SUBSET ONLY
+        feasible_tools_list = (dialogue_state or {}).get("feasible_tools", [])
+        active_tools = [t for t in tools if t.get("function", {}).get("name") in set(feasible_tools_list)] if feasible_tools_list else tools
+        if not active_tools:
+            active_tools = tools
+
+        # If only 1 feasible tool survives, emit directly (skip multi-sample CGCC overhead)!
+        if len(active_tools) == 1:
+            print(f"[v24-GCGCC] Single feasible tool '{active_tools[0].get('function', {}).get('name')}' -> Single rollout", flush=True)
+            inference_data_single = dict(inference_data)
+            inference_data_single["tools"] = active_tools
+            api_response, latency = self._request_tool_call(inference_data_single)
+            anchor = self._parse_api_response(api_response)
+            anchor["latency"] = latency
+            return self._maybe_repair(anchor, inference_data_single)
+
+        # Full Multi-Sample CGCC Candidate Competition on Feasible Tool Subset
+        print(f"[v24-GCGCC] Running CGCC Competition on Feasible Tool Subset ({len(active_tools)} tools)", flush=True)
+        inference_data_cgcc = dict(inference_data)
+        inference_data_cgcc["tools"] = active_tools
+        api_response, latency = self._request_tool_call(inference_data_cgcc)
         anchor = self._parse_api_response(api_response)
         anchor["latency"] = latency
 
         if self.sc_n <= 1 or not hasattr(self, "_request_candidates"):
-            return self._maybe_repair(anchor, inference_data)
+            return self._maybe_repair(anchor, inference_data_cgcc)
 
         try:
-            extra = self._request_candidates(inference_data, self.sc_n - 1, self.sc_temperature)
+            extra = self._request_candidates(inference_data_cgcc, self.sc_n - 1, self.sc_temperature)
         except Exception as e:
             print(f"Consensus sampling failed, using anchor only: {e}", flush=True)
-            return self._maybe_repair(anchor, inference_data)
+            return self._maybe_repair(anchor, inference_data_cgcc)
 
         candidates = [self._normalize_response(dict(anchor))]
         candidates.extend(self._normalize_response(dict(c)) for c in extra)
@@ -899,14 +936,14 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        mcsg_state = self._minimum_commitment_gate(tools, messages, dialogue_state=dialogue_state)
+        mcsg_state = self._minimum_commitment_gate(active_tools, messages, dialogue_state=dialogue_state)
         consensus_log["mcsg_state"] = mcsg_state
 
         from wtb.checker_utils import ToolArgsChecker
         checker = ToolArgsChecker()
         valid_candidates = []
         valid_signatures = []
-        known_tool_names = {t.get("function", {}).get("name") for t in tools if t.get("function", {}).get("name")}
+        known_tool_names = {t.get("function", {}).get("name") for t in active_tools if t.get("function", {}).get("name")}
 
         history_calls = set()
         for m in messages:
@@ -953,7 +990,7 @@ class BaseHandler:
                     fn_args = fn_args if isinstance(fn_args, dict) else {}
 
                     req_slots = set()
-                    for t in tools:
+                    for t in active_tools:
                         if t.get("function", {}).get("name") == fn_name:
                             req_slots = set(t.get("function", {}).get("parameters", {}).get("required", []) or [])
                             break
@@ -972,7 +1009,7 @@ class BaseHandler:
                     fn_args = tc.get("function", {}).get("arguments")
                     args_str = fn_args if isinstance(fn_args, str) else json.dumps(fn_args or {}, ensure_ascii=False)
                     try:
-                        if checker.tool_check(tools, fn_name, args_str) != checker.CORRECT:
+                        if checker.tool_check(active_tools, fn_name, args_str) != checker.CORRECT:
                             has_schema_breach = True
                             break
                     except Exception:
@@ -1000,7 +1037,7 @@ class BaseHandler:
             else:
                 def pure_rank_score(sig):
                     clust = [c for c, s in zip(valid_candidates, valid_signatures) if s == sig]
-                    return min(self._candidate_violations(c, inference_data)["total"] for c in clust)
+                    return min(self._candidate_violations(c, inference_data_cgcc)["total"] for c in clust)
                 winning_signature = min(winners, key=pure_rank_score)
 
             cluster = [c for c, s in zip(valid_candidates, valid_signatures) if s == winning_signature]
@@ -1009,20 +1046,20 @@ class BaseHandler:
 
             chosen = dict(cluster[0])
             if winning_signature[0] == "tools":
-                scores = [self._candidate_violations(c, inference_data)["total"] for c in cluster]
+                scores = [self._candidate_violations(c, inference_data_cgcc)["total"] for c in cluster]
                 best_idx = min(range(len(cluster)), key=lambda i: (scores[i], i))
                 chosen = dict(cluster[best_idx])
                 consensus_log["checker_violation_scores"] = scores
                 consensus_log["checker_pick"] = best_idx
 
-        print(f"[G-CGCC Surviving Candidate]: {chosen.get('tool_calls') or 'TEXT'}", flush=True)
+        print(f"[v24-GCGCC Surviving Candidate]: {chosen.get('tool_calls') or 'TEXT'}", flush=True)
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
         chosen["output_token"] = total_output
         chosen["latency"] = total_latency
         chosen["consensus_log"] = consensus_log
-        return self._maybe_repair(chosen, inference_data)
+        return self._maybe_repair(chosen, inference_data_cgcc)
 
     def _candidate_violations(self, candidate, inference_data):
         '''
@@ -1672,6 +1709,7 @@ class BaseHandler:
             inference_data = {
                 "test_entry_id": test_entry_id,
                 "task_idx": task_idx,
+                "step": step,
                 "tools": tools,
                 "messages": messages,
                 "answer_list": answer_list,
