@@ -27,10 +27,9 @@ class BaseHandler:
         self.temperature = temperature
         self.model_messages = []
         self.consecutive_tool_messages = True
-        # Single-rollout execution (temp 0.0) by default. The WTB_SC_N env var
-        # can override this if multi-sample ablation is ever requested.
-        self.sc_n = int(os.getenv("WTB_SC_N", "1"))
-        self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.8"))
+        # Multi-sample candidate competition (default sc_n=3, temp=0.7 for CGCC candidate diversity).
+        self.sc_n = int(os.getenv("WTB_SC_N", "3"))
+        self.sc_temperature = float(os.getenv("WTB_SC_TEMP", "0.7"))
         # Entity-card labels are OFF by default: measured on result_igar_v2 they
         # flipped 18 Chat turns from a text answer to a tool call (-6 net Chat).
         # Set WTB_ENTITY_LABELS=1 to re-enable the trimmed version for a pilot.
@@ -784,26 +783,98 @@ class BaseHandler:
         mcsg_state = self._minimum_commitment_gate(tools, messages, dialogue_state=dialogue_state)
         consensus_log["mcsg_state"] = mcsg_state
 
-        # Filter candidates before voting according to elimination gate
+        # CGCC Elimination Pipeline: Filter candidates before voting according to hard checks
+        from wtb.checker_utils import ToolArgsChecker
+        checker = ToolArgsChecker()
         valid_candidates = []
         valid_signatures = []
+        known_tool_names = {t.get("function", {}).get("name") for t in tools if t.get("function", {}).get("name")}
         feas_set = set((dialogue_state or {}).get("feasible_tools") or [])
+
+        # History calls for duplicate elimination
+        history_calls = set()
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {})
+                    args_h = fn.get("arguments")
+                    if isinstance(args_h, str):
+                        try:
+                            args_h = json.loads(args_h)
+                        except Exception:
+                            pass
+                    history_calls.add((fn.get("name"), self._canon(args_h)))
 
         for c, s in zip(candidates, signatures):
             if s == ("empty",):
                 continue
-            # 1. Action class elimination
+
+            # Check 1: Action Class Elimination
             if mcsg_state["action_class"] == "grounded_tool" and s == ("text",):
                 continue
             if mcsg_state["action_class"] == "ambiguous_chat" and s[0] == "tools":
                 continue
-            # 2. Feasibility elimination for tool calls
-            if s[0] == "tools" and feas_set:
-                if any(tname not in feas_set for tname in s[1:]):
+
+            # Check 2: Tool-Name Validity & Schema/Grounding/Duplicate Checks
+            if s[0] == "tools":
+                t_calls = c.get("tool_calls") or []
+                if not t_calls:
                     continue
+                
+                # Check tool names valid in schema
+                if any(tc.get("function", {}).get("name") not in known_tool_names for tc in t_calls):
+                    continue
+
+                # Check duplicate call
+                if any((tc.get("function", {}).get("name"), self._canon(tc.get("function", {}).get("arguments"))) in history_calls for tc in t_calls):
+                    continue
+
+                # Check required arguments grounded
+                has_ungrounded_req = False
+                for tc in t_calls:
+                    fn_name = tc.get("function", {}).get("name")
+                    fn_args = tc.get("function", {}).get("arguments")
+                    if isinstance(fn_args, str):
+                        try:
+                            fn_args = json.loads(fn_args)
+                        except Exception:
+                            fn_args = {}
+                    fn_args = fn_args if isinstance(fn_args, dict) else {}
+                    
+                    req_slots = set()
+                    for t in tools:
+                        if t.get("function", {}).get("name") == fn_name:
+                            req_slots = set(t.get("function", {}).get("parameters", {}).get("required", []) or [])
+                            break
+                    for r_slot in req_slots:
+                        if r_slot not in fn_args or not self._is_grounded(fn_args[r_slot], json.dumps(messages, ensure_ascii=False), key_name=r_slot, dialogue_state=dialogue_state):
+                            has_ungrounded_req = True
+                            break
+                    if has_ungrounded_req:
+                        break
+                if has_ungrounded_req:
+                    continue
+
+                # Check schema compliance
+                has_schema_breach = False
+                for tc in t_calls:
+                    fn_name = tc.get("function", {}).get("name")
+                    fn_args = tc.get("function", {}).get("arguments")
+                    args_str = fn_args if isinstance(fn_args, str) else json.dumps(fn_args or {}, ensure_ascii=False)
+                    try:
+                        if checker.tool_check(tools, fn_name, args_str) != checker.CORRECT:
+                            has_schema_breach = True
+                            break
+                    except Exception:
+                        has_schema_breach = True
+                        break
+                if has_schema_breach:
+                    continue
+
             valid_candidates.append(c)
             valid_signatures.append(s)
 
+        # Fallback to normalized non-empty candidates if elimination was too strict
         if not valid_signatures:
             valid_candidates = [c for c, s in zip(candidates, signatures) if s != ("empty",)]
             valid_signatures = [s for s in signatures if s != ("empty",)]
