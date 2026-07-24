@@ -762,13 +762,14 @@ class BaseHandler:
                 return True
         return False
 
-    def _interaction_mode_gate(self, messages, dialogue_state, tools, is_step_zero=False):
+    def _interaction_mode_gate(self, messages, dialogue_state, tools):
         '''
-        Stricter Front Interaction Gate before CGCC.
-        Defaults to CHAT unless:
-          1) Explicit tool intent exists in user turn, AND
-          2) Grounded required arguments exist in dialogue_state.
-        On step 0 (is_step_zero=True): Extra strict!
+        Strict Interaction Gate:
+        Decides strictly 'chat', 'clarify', or 'tool'.
+        Enter 'tool' ONLY when BOTH are true:
+          1) Explicit tool intent in current user turn (or tool continuation), AND
+          2) Required arguments are grounded in dialogue_state.
+        If either is weak, fallback to 'chat' or 'clarify'.
         '''
         user_msgs = [m for m in (messages or []) if m.get("role") == "user"]
         current_user_msg = user_msgs[-1].get("content", "").strip() if user_msgs else ""
@@ -777,22 +778,26 @@ class BaseHandler:
         feasible_tools = (dialogue_state or {}).get("feasible_tools", [])
         unresolved = (dialogue_state or {}).get("unresolved_required_slots", {})
 
-        # Step 0 Extra Strict Gate: Protect Chat & First Turn
-        if is_step_zero:
-            if has_intent and feasible_tools:
-                return "tool", f"Step 0 explicit intent + feasible tools: {feasible_tools}"
-            elif unresolved and has_intent:
-                return "clarify", "Step 0 explicit tool intent with missing required parameter"
-            else:
-                return "chat", "Step 0 default chat protection"
+        # Condition 1: Explicit intent + grounded feasible tools -> TOOL
+        if has_intent and feasible_tools:
+            return "tool", f"Explicit intent + grounded feasible tools: {feasible_tools}"
 
-        # Subsequent Steps Gate
-        if feasible_tools and (has_intent or len(messages) > 3):
-            return "tool", f"Grounded feasible tools found: {feasible_tools}"
-        elif unresolved and has_intent:
-            return "clarify", "Missing required parameter for target tool intent"
+        # Condition 2: Multi-turn tool workflow continuation -> TOOL
+        last_was_tool = False
+        for m in reversed(messages or []):
+            if m.get("role") == "assistant":
+                if m.get("tool_calls"):
+                    last_was_tool = True
+                break
+        if last_was_tool and feasible_tools:
+            return "tool", f"Multi-turn tool workflow continuation: {feasible_tools}"
 
-        return "chat", "Default chat protection mode"
+        # Condition 3: Explicit tool intent present but required parameters missing -> CLARIFY
+        if has_intent and unresolved:
+            return "clarify", "Explicit tool intent present but required parameters missing"
+
+        # Default fallback: CHAT
+        return "chat", "Default chat mode (no grounded tool commitment)"
 
     def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
@@ -846,23 +851,21 @@ class BaseHandler:
 
     def _consensus_generate(self, inference_data):
         '''
-        v24-Gated CGCC: Stricter front-gating before CGCC runs.
-        Only runs multi-sample CGCC candidate competition for confirmed 'tool' turns on feasible tool subset.
+        v24-Core Gated CGCC: Strict front-gating before CGCC runs.
+        Runs multi-sample CGCC candidate competition ONLY for confirmed 'tool' turns on feasible tool subset.
         Bypasses CGCC for 'chat' and 'clarify' turns.
         '''
         tools = inference_data.get("tools") or []
         messages = inference_data.get("messages") or []
         dialogue_state = inference_data.get("dialogue_state")
-        step = inference_data.get("step", 0)
-        is_step_zero = (step == 0)
 
-        # 1 & 2: Stricter Front Interaction Mode Gate
-        mode, reason = self._interaction_mode_gate(messages, dialogue_state, tools, is_step_zero=is_step_zero)
-        print(f"[v24-GCGCC Gate] Step {step} | Selected Mode: '{mode.upper()}' | Reason: {reason}", flush=True)
+        # 1 & 2: Strict Interaction Mode Gate
+        mode, reason = self._interaction_mode_gate(messages, dialogue_state, tools)
+        print(f"[v24-Core Gate] Selected Mode: '{mode.upper()}' | Reason: {reason}", flush=True)
 
         # Mode: 'chat' -> Bypass CGCC tool generation! Return clean text response with unified schema
         if mode == "chat":
-            print("[v24-GCGCC] Running CHAT path (CGCC bypassed)", flush=True)
+            print("[v24-Core] Running CHAT path (CGCC bypassed)", flush=True)
             api_response, latency = self._request_tool_call(inference_data)
             anchor = self._parse_api_response(api_response)
             anchor["latency"] = latency
@@ -878,7 +881,7 @@ class BaseHandler:
 
         # Mode: 'clarify' -> Bypass CGCC tool generation! Emit concise clarification prompt with unified schema
         if mode == "clarify":
-            print("[v24-GCGCC] Running CLARIFY path (CGCC bypassed)", flush=True)
+            print("[v24-Core] Running CLARIFY path (CGCC bypassed)", flush=True)
             clarify_slot = (dialogue_state or {}).get("clarify_slot") or "details"
             clarification_text = f"Could you please specify the {clarify_slot} so I can assist you accurately?"
             return {
@@ -896,6 +899,8 @@ class BaseHandler:
         active_tools = [t for t in tools if t.get("function", {}).get("name") in set(feasible_tools_list)] if feasible_tools_list else tools
         if not active_tools:
             active_tools = tools
+
+        print(f"[v24-Core] TOOL mode -> CGCC Competition on {len(active_tools)} feasible tools", flush=True)
 
         # If only 1 feasible tool survives, emit directly (skip multi-sample CGCC overhead)!
         if len(active_tools) == 1:
