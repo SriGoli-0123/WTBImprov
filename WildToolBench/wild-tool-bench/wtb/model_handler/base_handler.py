@@ -744,12 +744,135 @@ class BaseHandler:
             "highest_missing_slot": None
         }
 
+    def _interaction_mode_gate(self, messages, dialogue_state, tools):
+        '''
+        Instruction 1: Hard Interaction Gate before CGCC.
+        Decides strictly one of three modes: 'chat', 'clarify', or 'tool'.
+        Does NOT rank tools. Does NOT score candidates.
+        '''
+        if dialogue_state and isinstance(dialogue_state, dict):
+            commitment_mode = dialogue_state.get("current_commitment_mode") or dialogue_state.get("interaction_mode")
+            if commitment_mode == "grounded_tool":
+                return "tool", "Grounded tool commitment found in dialogue state"
+            elif commitment_mode == "under_specified":
+                return "clarify", "Missing required parameters for target tool intent"
+            elif commitment_mode == "ambiguous_chat":
+                return "chat", "No grounded tool intent present in dialogue state"
+
+        ctx_text = json.dumps(messages, ensure_ascii=False).lower()
+        tool_status = {}
+        for t in (tools or []):
+            func = t.get("function", {})
+            tname = func.get("name")
+            if not tname:
+                continue
+            params = func.get("parameters", {}) or {}
+            req = set(params.get("required", []) or [])
+            missing = {s for s in req if s.lower() not in ctx_text}
+            tool_status[tname] = {"missing": missing, "fully_grounded": len(missing) == 0}
+
+        grounded = [t for t, st in tool_status.items() if st["fully_grounded"]]
+        if grounded:
+            return "tool", f"Grounded tools found: {grounded}"
+        
+        has_missing_req = any(st["missing"] for st in tool_status.values() if len(st["missing"]) < len(st.get("required", [])))
+        if has_missing_req:
+            return "clarify", "Under-specified turn with missing required parameter"
+
+        return "chat", "Default chat mode for conversational/ambiguous query"
+
+    def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
+        '''
+        Strict Elimination Gate driven by TTM Transition State.
+        '''
+        if dialogue_state and isinstance(dialogue_state, dict):
+            mode = dialogue_state.get("interaction_mode") or dialogue_state.get("current_commitment_mode") or "ambiguous_chat"
+            feasible = dialogue_state.get("feasible_tools", [])
+            unresolved = dialogue_state.get("unresolved_required_slots", {})
+            clarify_slot = dialogue_state.get("clarify_slot")
+            return {
+                "action_class": mode,
+                "target_tools": feasible if mode == "grounded_tool" else list(unresolved.keys()),
+                "highest_missing_slot": clarify_slot,
+            }
+
+        ctx_text = json.dumps(messages, ensure_ascii=False).lower()
+        slot_coverage = Counter()
+        tool_status = {}
+
+        for t in (tools or []):
+            func = t.get("function", {})
+            tname = func.get("name")
+            if not tname:
+                continue
+            params = func.get("parameters", {}) or {}
+            req = set(params.get("required", []) or [])
+            for slot in req:
+                slot_coverage[slot] += 1
+
+            missing = {s for s in req if s.lower() not in ctx_text}
+            tool_status[tname] = {
+                "required": req,
+                "missing": missing,
+                "fully_grounded": len(missing) == 0
+            }
+
+        fully_grounded_tools = [t for t, status in tool_status.items() if status["fully_grounded"]]
+        if len(fully_grounded_tools) >= 1:
+            return {
+                "action_class": "grounded_tool",
+                "target_tools": fully_grounded_tools,
+                "highest_missing_slot": None
+            }
+
+        return {
+            "action_class": "ambiguous_chat",
+            "target_tools": [],
+            "highest_missing_slot": None
+        }
+
     def _consensus_generate(self, inference_data):
         '''
-        Self-consistency decoding with a tool-first, selected-path commitment
-        preference.  Dialogue state can only break a tied vote toward a
-        plausible tool; it cannot globally force a clarification.
+        Gated CGCC: Interaction Mode Gate branches execution before running CGCC.
+        Only runs multi-sample CGCC candidate competition for 'tool' turns.
+        Bypasses CGCC for 'chat' and 'clarify' turns.
         '''
+        tools = inference_data.get("tools") or []
+        messages = inference_data.get("messages") or []
+        dialogue_state = inference_data.get("dialogue_state")
+
+        # Instruction 1 & 2: Hard Interaction Mode Gate
+        mode, reason = self._interaction_mode_gate(messages, dialogue_state, tools)
+        print(f"[G-CGCC Gate] Selected Mode: '{mode.upper()}' | Reason: {reason}", flush=True)
+
+        # Mode: 'chat' -> Bypass CGCC tool generation! Return clean text response
+        if mode == "chat":
+            print("[G-CGCC] Bypassing CGCC multi-sample tool generation -> Running CHAT path", flush=True)
+            api_response, latency = self._request_tool_call(inference_data)
+            anchor = self._parse_api_response(api_response)
+            anchor["latency"] = latency
+            if anchor.get("tool_calls"):
+                anchor["tool_calls"] = None
+                if not anchor.get("content"):
+                    anchor["content"] = "I can help answer your question directly."
+            return self._maybe_repair(anchor, inference_data)
+
+        # Mode: 'clarify' -> Bypass CGCC tool generation! Emit concise clarification prompt
+        if mode == "clarify":
+            print("[G-CGCC] Bypassing CGCC multi-sample tool generation -> Running CLARIFY path", flush=True)
+            clarify_slot = (dialogue_state or {}).get("clarify_slot") or "details"
+            clarification_text = f"Could you please specify the {clarify_slot} so I can assist you accurately?"
+            return {
+                "role": "assistant",
+                "content": clarification_text,
+                "tool_calls": None,
+                "latency": 0.0,
+                "input_token": 0,
+                "output_token": 0,
+            }
+
+        # Mode: 'tool' -> Execute full CGCC Multi-Sample Competition Engine
+        print("[G-CGCC] Running CGCC Multi-Sample Candidate Competition Engine", flush=True)
         api_response, latency = self._request_tool_call(inference_data)
         anchor = self._parse_api_response(api_response)
         anchor["latency"] = latency
@@ -767,7 +890,6 @@ class BaseHandler:
         candidates.extend(self._normalize_response(dict(c)) for c in extra)
 
         signatures = [self._response_signature(c) for c in candidates]
-        vote_counts = Counter(s for s in signatures if s != ("empty",))
         consensus_log = {
             "candidate_signatures": [list(s) for s in signatures],
         }
@@ -776,22 +898,15 @@ class BaseHandler:
         total_output = sum(c.get("output_token") or 0 for c in candidates)
         total_latency = sum(c.get("latency") or 0 for c in candidates)
 
-        # MCSG: Evaluate Pre-Generation Action Gate from Dialogue State
-        tools = inference_data.get("tools") or []
-        messages = inference_data.get("messages") or []
-        dialogue_state = inference_data.get("dialogue_state")
         mcsg_state = self._minimum_commitment_gate(tools, messages, dialogue_state=dialogue_state)
         consensus_log["mcsg_state"] = mcsg_state
 
-        # CGCC Elimination Pipeline: Filter candidates before voting according to hard checks
         from wtb.checker_utils import ToolArgsChecker
         checker = ToolArgsChecker()
         valid_candidates = []
         valid_signatures = []
         known_tool_names = {t.get("function", {}).get("name") for t in tools if t.get("function", {}).get("name")}
-        feas_set = set((dialogue_state or {}).get("feasible_tools") or [])
 
-        # History calls for duplicate elimination
         history_calls = set()
         for m in messages:
             if m.get("role") == "assistant" and m.get("tool_calls"):
@@ -809,27 +924,22 @@ class BaseHandler:
             if s == ("empty",):
                 continue
 
-            # Check 1: Action Class Elimination
             if mcsg_state["action_class"] == "grounded_tool" and s == ("text",):
                 continue
             if mcsg_state["action_class"] == "ambiguous_chat" and s[0] == "tools":
                 continue
 
-            # Check 2: Tool-Name Validity & Schema/Grounding/Duplicate Checks
             if s[0] == "tools":
                 t_calls = c.get("tool_calls") or []
                 if not t_calls:
                     continue
-                
-                # Check tool names valid in schema
+
                 if any(tc.get("function", {}).get("name") not in known_tool_names for tc in t_calls):
                     continue
 
-                # Check duplicate call
                 if any((tc.get("function", {}).get("name"), self._canon(tc.get("function", {}).get("arguments"))) in history_calls for tc in t_calls):
                     continue
 
-                # Check required arguments grounded
                 has_ungrounded_req = False
                 for tc in t_calls:
                     fn_name = tc.get("function", {}).get("name")
@@ -840,7 +950,7 @@ class BaseHandler:
                         except Exception:
                             fn_args = {}
                     fn_args = fn_args if isinstance(fn_args, dict) else {}
-                    
+
                     req_slots = set()
                     for t in tools:
                         if t.get("function", {}).get("name") == fn_name:
@@ -855,7 +965,6 @@ class BaseHandler:
                 if has_ungrounded_req:
                     continue
 
-                # Check schema compliance
                 has_schema_breach = False
                 for tc in t_calls:
                     fn_name = tc.get("function", {}).get("name")
@@ -874,7 +983,6 @@ class BaseHandler:
             valid_candidates.append(c)
             valid_signatures.append(s)
 
-        # Fallback to normalized non-empty candidates if elimination was too strict
         if not valid_signatures:
             valid_candidates = [c for c, s in zip(candidates, signatures) if s != ("empty",)]
             valid_signatures = [s for s in signatures if s != ("empty",)]
@@ -905,6 +1013,8 @@ class BaseHandler:
                 chosen = dict(cluster[best_idx])
                 consensus_log["checker_violation_scores"] = scores
                 consensus_log["checker_pick"] = best_idx
+
+        print(f"[G-CGCC Surviving Candidate]: {chosen.get('tool_calls') or 'TEXT'}", flush=True)
 
         chosen = dict(chosen)
         chosen["input_token"] = total_input
