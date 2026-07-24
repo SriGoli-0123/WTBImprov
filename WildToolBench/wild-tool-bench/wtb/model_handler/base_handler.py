@@ -550,16 +550,157 @@ class BaseHandler:
             return ("text",)
         return ("empty",)
 
+    def _detect_transition(self, messages, history_answer_lists=None, tools=None):
+        '''
+        TTM Core Module: Detect Instruction Transition Type.
+        Explicitly infers what changed between previous turn/state and current user turn:
+          - 'SOCIAL': Conversational phrase / greeting without tool intent.
+          - 'SWITCH': User starts a completely new domain/task goal.
+          - 'REFINE': User keeps active goal, updating constraints/filters.
+          - 'EXPAND': User keeps active goal, adding a new subtask.
+          - 'MODIFY': User keeps active goal, modifying attribute of existing object.
+          - 'CONTINUE': User continues workflow or supplies missing information.
+        '''
+        user_msgs = [m for m in (messages or []) if m.get("role") == "user"]
+        if not user_msgs:
+            return "SOCIAL"
+
+        current_msg = user_msgs[-1].get("content", "").strip()
+        low_msg = current_msg.lower()
+
+        social_phrases = {
+            "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye",
+            "great", "awesome", "ok", "okay", "cool", "perfect"
+        }
+        words = re.findall(r"\b[a-z]+\b", low_msg)
+        if len(words) <= 3 and any(w in social_phrases for w in words):
+            if not any(kw in low_msg for kw in ["find", "search", "book", "get", "show", "list", "check", "set"]):
+                return "SOCIAL"
+
+        if len(user_msgs) <= 1:
+            return "CONTINUE"
+
+        prev_user_msg = user_msgs[-2].get("content", "").strip()
+        prev_tokens = self._state_tokens(prev_user_msg)
+        curr_tokens = self._state_tokens(current_msg)
+
+        refine_keywords = {"only", "just", "cheapest", "fastest", "nonstop", "under", "above", "less", "more", "filter", "sort", "with", "without"}
+        if curr_tokens & refine_keywords:
+            return "REFINE"
+
+        expand_keywords = {"also", "addition", "plus", "as well", "and"}
+        if curr_tokens & expand_keywords or "what about" in low_msg:
+            return "EXPAND"
+
+        modify_keywords = {"change", "update", "modify", "instead", "replace", "set"}
+        if curr_tokens & modify_keywords:
+            return "MODIFY"
+
+        if not (prev_tokens & curr_tokens):
+            domain_verbs = {"book", "find", "search", "get", "list", "show", "check", "create", "delete"}
+            if curr_tokens & domain_verbs:
+                return "SWITCH"
+
+        return "CONTINUE"
+
+    def _update_task_state(self, tools, messages, history_answer_lists=None):
+        '''
+        TTM Core Module: Task Transition State Engine.
+        Computes updated Task Transition State based on detected transition:
+          Goal, Current Object, Current Focus, Current Operation, Constraints,
+          Grounded Values, Missing Values, Transition Type, Interaction Mode.
+        '''
+        transition_type = self._detect_transition(messages, history_answer_lists, tools)
+        base_state = self._build_latent_task_state(tools, messages, history_answer_lists)
+
+        grounded_values = base_state.get("grounded_values", {})
+        missing_values = base_state.get("missing_required_values", {})
+        feasible_tools = base_state.get("feasible_tools", [])
+
+        if transition_type == "SOCIAL":
+            interaction_mode = "ambiguous_chat"
+            workflow_stage = "dialogue"
+        elif transition_type == "SWITCH":
+            interaction_mode = "grounded_tool" if feasible_tools else ("under_specified" if missing_values else "ambiguous_chat")
+            workflow_stage = "task_switch"
+        elif transition_type == "REFINE":
+            interaction_mode = "grounded_tool" if feasible_tools else "under_specified"
+            workflow_stage = "refine_constraints"
+        elif transition_type == "EXPAND":
+            interaction_mode = "grounded_tool" if feasible_tools else "under_specified"
+            workflow_stage = "expand_subtask"
+        elif transition_type == "MODIFY":
+            interaction_mode = "grounded_tool" if feasible_tools else "under_specified"
+            workflow_stage = "modify_object"
+        else:
+            interaction_mode = "grounded_tool" if feasible_tools else ("under_specified" if missing_values else "ambiguous_chat")
+            workflow_stage = "continue_workflow"
+
+        task_state = dict(base_state)
+        task_state.update({
+            "transition_type": transition_type,
+            "interaction_mode": interaction_mode,
+            "current_workflow_stage": workflow_stage,
+            "current_commitment_mode": interaction_mode,
+            "action_commitment": interaction_mode,
+        })
+        return task_state
+
+    def _select_interaction_policy(self, task_state):
+        '''
+        TTM Core Module: Interaction Policy.
+        Maps detected transition & task state to actionable interaction policy.
+        '''
+        ttype = task_state.get("transition_type", "CONTINUE")
+        mode = task_state.get("interaction_mode", "ambiguous_chat")
+
+        if ttype == "SOCIAL" or mode == "ambiguous_chat":
+            return {
+                "policy_name": "social_chat",
+                "prefer_tool": False,
+                "allow_clarification": False,
+            }
+        elif ttype == "SWITCH":
+            return {
+                "policy_name": "task_switch",
+                "prefer_tool": True,
+                "reset_prior_family": True,
+                "allow_clarification": mode == "under_specified",
+            }
+        elif ttype == "REFINE":
+            return {
+                "policy_name": "refine_constraints",
+                "prefer_tool": True,
+                "retain_family": True,
+                "allow_clarification": mode == "under_specified",
+            }
+        elif ttype == "EXPAND":
+            return {
+                "policy_name": "expand_subtask",
+                "prefer_tool": True,
+                "allow_parallel": True,
+                "allow_clarification": mode == "under_specified",
+            }
+        elif ttype == "MODIFY":
+            return {
+                "policy_name": "modify_object",
+                "prefer_tool": True,
+                "avoid_re_search": True,
+                "allow_clarification": mode == "under_specified",
+            }
+        else:
+            return {
+                "policy_name": "continue_workflow",
+                "prefer_tool": mode == "grounded_tool",
+                "allow_clarification": mode == "under_specified",
+            }
+
     def _minimum_commitment_gate(self, tools, messages, dialogue_state=None):
         '''
-        Strict Elimination Gate.
-        Answers commitment mode without soft scoring or candidate ranking:
-          - 'grounded_tool': 1+ tools have 100% required parameters grounded.
-          - 'under_specified': Required parameter missing for tool intent.
-          - 'ambiguous_chat': No tool intent present.
+        Strict Elimination Gate driven by TTM Transition State.
         '''
         if dialogue_state and isinstance(dialogue_state, dict):
-            mode = dialogue_state.get("current_commitment_mode") or "ambiguous_chat"
+            mode = dialogue_state.get("interaction_mode") or dialogue_state.get("current_commitment_mode") or "ambiguous_chat"
             feasible = dialogue_state.get("feasible_tools", [])
             unresolved = dialogue_state.get("unresolved_required_slots", {})
             clarify_slot = dialogue_state.get("clarify_slot")
@@ -1406,13 +1547,17 @@ class BaseHandler:
         input_token_count = []
         output_token_count = []
         while True:
-            # Recompute from the transcript that is actually visible at this
-            # step, including gold-history observations and this task's prior
-            # tool results.  No future task/step is consulted.
-            inference_data["dialogue_state"] = self._build_latent_task_state(
+            # TTM Core Reasoning Loop: Update Task State & Detect Transition per step
+            task_state = self._update_task_state(
                 tools, messages, inference_data.get("history_answer_lists")
             )
-            dialogue_state = inference_data["dialogue_state"]
+            policy = self._select_interaction_policy(task_state)
+
+            inference_data["dialogue_state"] = task_state
+            inference_data["ttm_task_state"] = task_state
+            inference_data["ttm_policy"] = policy
+            dialogue_state = task_state
+
             print("-" * 100, flush=True)
             print(
                 f"ID: {test_entry_id.replace('wild_tool_bench_', '')}, Task: {task_idx}, Step: {step}", flush=True
