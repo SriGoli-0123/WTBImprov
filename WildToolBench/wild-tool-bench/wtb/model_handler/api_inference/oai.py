@@ -43,20 +43,28 @@ class OpenAIHandler(BaseHandler):
 
         return api_response, latency
 
-    def _request_text_only(self, inference_data):
-        '''
-        Re-ask the model on the same conversation with tool calling disabled, so
-        it must respond in words. Used by the ask-instead-of-guess gate: the
-        clarifying question stays authored by the model, never by the harness.
-        '''
-        api_response, _ = self.generate_with_backoff(
+    def _request_text_candidate(self, inference_data):
+        """Generate model-authored text on the unchanged conversation.
+
+        CAV uses this only after it proves that the proposed tool frontier is
+        non-executable or driven by action inertia.  No corrective prompt,
+        benchmark label, or evaluator feedback is added.
+        """
+        api_response, latency = self.generate_with_backoff(
             messages=inference_data["messages"],
             model=self.model_name,
             temperature=self.temperature,
             tools=inference_data["tools"],
             tool_choice="none",
         )
-        return json.loads(api_response.json())["choices"][0]["message"].get("content")
+        parsed = self._parse_api_response(api_response)
+        parsed["latency"] = latency
+        parsed["tool_calls"] = None
+        return parsed
+
+    def _request_text_only(self, inference_data):
+        """Compatibility wrapper for retired experimental gates."""
+        return self._request_text_candidate(inference_data).get("content")
 
     def _request_candidates(self, inference_data, n, temperature):
         '''

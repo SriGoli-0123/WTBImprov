@@ -9,6 +9,44 @@ Repo: `SriGoli-0123/WTBImprov`, branch `demo`.
 
 ---
 
+## Current implementation: CAV (unscored)
+
+The active `demo` method is now **Contrastive Action Verification (CAV)**.
+It supersedes the earlier ledger, TTM, consensus, and hard-gate proposals below;
+those sections remain as historical evidence and negative-result context.
+
+CAV preserves the original date-only system prompt and receives only native
+`messages` plus supplied `tools`. The controller explicitly rejects evaluator
+objects such as answer lists, task IDs, graph state, expected values, and scores.
+
+For a tool-emitting anchor, CAV compares two concurrent diagnostic views:
+
+1. the conversation with the latest user content hidden or latest tool execution removed;
+2. the full conversation with prior tool-call syntax neutralized but raw results retained.
+
+It uses agreement between those views to create per-argument causal receipts,
+then emits only the schema-valid, provenance-supported calls that are executable
+now. Completed calls are blocked unless the latest event causally re-authorizes
+their repetition. The baseline is preserved unless a contradiction is
+mechanically proven. If no call remains or both views prove action momentum,
+the same model produces text on the unchanged conversation with tools disabled;
+no corrective prompt is inserted.
+
+Implementation:
+
+- `WildToolBench/wild-tool-bench/wtb/model_handler/cav.py`
+- integration in `base_handler.py`
+- text fallback in `api_inference/oai.py`
+- ten unit tests in `tests/test_cav.py`
+
+This code has **not** been run or scored on WTB. Because this repository has
+already been adaptively developed against the full benchmark, any next WTB run
+is exploratory/development-set evidence, not an untouched generalization result.
+
+See `IMPROVEMENT_METHOD.md` for the exact algorithm and evaluation firewall.
+
+---
+
 ## 1. Benchmark mechanics (non-obvious, verified from code)
 
 **Scoring.** A session = 4 tasks. `session_correct` requires **all 4** tasks correct.
@@ -145,7 +183,7 @@ Dead end.
 
 ---
 
-## 4. Current proposal: three mechanical gates (NOT YET IMPLEMENTED)
+## 4. Historical proposal: three mechanical gates
 
 Framing: aviation safety engineering. A session is a 4-leg flight; one crash = mission
 zero. Aviation did NOT solve this by making pilots think better (= system prompts,
@@ -268,7 +306,10 @@ and even then >15% needs task accuracy ≈62%, which likely requires in-domain
 
 ---
 
-## 7. Config / commands
+## 7. Historical config / commands (retired)
+
+The variables below describe earlier experiments and are not part of active
+CAV selection. Active CAV has one runtime ceiling: `WTB_CAV_WORKERS=8`.
 
 Env knobs (in `wtb/model_handler/base_handler.py`):
 | Var | Default | Meaning |

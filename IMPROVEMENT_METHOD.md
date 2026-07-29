@@ -1,174 +1,141 @@
-# Consensus Decoding + Action-Mode Triage for WildToolBench
+# Contrastive Action Verification (CAV)
 
-Inference-time method to raise task- and session-level accuracy of small open models
-(e.g. Qwen2.5-7B-Instruct) on WildToolBench, replacing the three earlier
-"pre-execution check" prompt methods.
+Status: implemented on `demo`, not yet scored.
 
-## Why the previous methods could not work
+## Goal
 
-Failure analysis of the baseline (`score/Qwen_Qwen2.5-7B-Instruct`, task acc 34.4%,
-session acc 1.6%) shows **416 of 672 failures are action-name errors** — the model
-chose the wrong *kind* of response — and only 256 are argument errors:
+Increase WildToolBench session accuracy by improving the model's general
+multi-turn tool-use decisions without:
 
-| Failure pattern | Count | Meaning |
-|---|---|---|
-| should ASK, called tools instead | 144 | guessed/hallucinated missing required params |
-| should call TOOLS, replied with text | 93 | narrated intent or asked unnecessarily |
-| should ANSWER from history, called tools | 81 | re-queried data already in the conversation |
-| wrong / partially wrong tool set | 98 | tool selection or grouping errors |
-| argument key-set mismatch | 148 | added unrequested optional params (`sync: true`, `last_knowledge_of_server: 0`, …) |
-| argument value errors | ~108 | wrong dates/IDs/strings |
+- changing the system prompt;
+- training or updating model weights;
+- using RL;
+- using WTB task labels, expected actions, scores, or evaluator feedback;
+- adding benchmark-specific keywords or rules.
 
-All three earlier methods rewrote **arguments of an already-emitted tool call**.
-They ran *after* the action-mode decision, so they could not fix any of the 416
-action-name errors, while their out-of-band rewriting corrupted arguments that were
-already correct (task accuracy dropped to 25.3% / 33.9% / 23.6%). Session accuracy
-(all 4 tasks of a session correct) is roughly `task_acc^4`, so nothing short of a
-broad task-accuracy lift can move it.
+The model still receives exactly:
 
-## The method: how a careful human avoids these mistakes
+1. `system`: `Current Date: <english_env_info>`;
+2. the native visible conversation;
+3. the current user message;
+4. the supplied detailed tool schemas.
 
-Two orthogonal, benchmark-agnostic components, both in
-`WildToolBench/wild-tool-bench/wtb/model_handler/`:
+## Simple idea
 
-### 1. Action-mode triage protocol (`base_handler.py`, `SYSTEM_PROMPT_TEMPLATE`)
+Let the model answer normally, then verify that a proposed action:
 
-*A human decides **what kind** of response the situation needs before acting.*
-The baseline system prompt was only `Current Date: ...` — the model got zero
-behavioral guidance. The new system prompt makes the model classify every turn into
-one of three modes before responding:
+1. was caused by the latest user/tool information;
+2. is not merely continuing prior tool-call syntax;
+3. uses values traceable to visible information;
+4. is schema-valid and executable now;
+5. has not already completed, unless the latest event causally re-authorizes it.
 
-- **[A] CALL TOOLS** — only when every required parameter is actually available;
-- **[B] ASK** — when a required parameter is missing or the reference is ambiguous
-  ("one of them"); never guess, never use placeholders;
-- **[C] ANSWER** — when the conversation (incl. earlier tool results) already
-  contains the answer; never re-call a tool for known data.
+The normal response is preserved unless a contradiction is mechanically
+demonstrated.
 
-plus five tool-calling rules: all independent calls in one turn (parallel),
-verbatim value copying, relative-date resolution against Current Date, argument
-minimalism (no self-invented optional params — directly targets the 148 key-set
-mismatches), and "never announce a tool call in text — make it".
+## Algorithm
 
-### 2. Consensus decoding / step-level self-consistency (`base_handler.py` + `api_inference/oai.py`)
+For each step:
 
-*A human double-checks by re-deriving the answer independently and going with the
-consensus.* At every step the handler samples `WTB_SC_N` candidates — 1 **anchor**
-at the run temperature plus N−1 diversity samples at `WTB_SC_TEMP` (one batched
-vLLM request via the OpenAI `n` parameter, so the prompt is prefilled once) — and
-votes hierarchically:
+1. **Anchor generation** — generate normally on the untouched messages and tools.
+2. If the anchor is text, preserve it.
+3. If the anchor contains tool calls, run two diagnostic model views concurrently:
+   - **without latest event**: blank the latest user content, or remove the
+     latest completed tool execution;
+   - **without prior action syntax**: remove earlier assistant tool-call syntax
+     while retaining the raw visible results.
+4. Construct **per-argument causal receipts**. A derived value is causally
+   supported only when it:
+   - appears in the anchor and syntax-neutral response; and
+   - disappears when the latest external event is removed.
+5. Build the **executable frontier**:
+   - retain known tools with valid JSON and schema types;
+   - require every required argument to have direct or causal provenance;
+   - remove unsupported optional arguments and unknown keys;
+   - suppress exact calls that already produced a visible tool result, unless
+     the latest event causally re-authorizes the repetition;
+   - emit all remaining independent executable calls together.
+6. If no call remains, or both counterfactuals prove action momentum, request
+   model-authored text on the original conversation with `tool_choice="none"`.
+   No corrective prompt is added.
+7. If a diagnostic or text fallback fails, preserve the usable anchor response.
 
-1. **Mode + tool-name multiset**: candidates cluster by signature
-   (`text` vs sorted tool names). Largest cluster wins; ties go to the anchor's
-   cluster. Random flip-flops between call/ask/answer and one-off wrong-tool picks
-   get outvoted.
-2. **Argument keys**: within the winning cluster, a parameter is kept only if a
-   strict majority of candidates include it (schema-required params are always
-   kept). Hallucinated optional params rarely survive a majority.
-3. **Argument values**: each kept key takes its majority value (canonical-JSON
-   vote, ties resolved toward the anchor).
+## Evaluator firewall
 
-Sampling failures degrade gracefully to the anchor-only response, and handlers
-without batched sampling (DeepSeek/HunYuan) automatically run anchor-only.
-The vote for each step is recorded in the result JSONL under
-`inference_log.step_k.consensus` for later analysis.
+`CAVController` accepts only:
 
-### Robustness to server-side parse failures
-
-At `WTB_SC_TEMP=0.8` a small model sometimes emits a truncated/malformed tool
-call that vLLM's `hermes` parser cannot parse; vLLM then returns the raw text as
-`content` with no `tool_calls` (this is what the `[vLLM Patch Warning] Failed to
-parse tool call...` lines report — harmless, non-fatal). If left as-is that text
-would count as an "answer" vote and could outvote a correct tool-call candidate.
-So before voting, each candidate is normalized (`_normalize_response`):
-
-- If the content is a recoverable tool-call attempt (e.g. a `<tool_call>` block or
-  a bare `{"name": ...}` JSON, possibly truncated), it is repaired via brace
-  balancing and converted back into a real tool call so it joins the tool cluster.
-- If it is an unrecoverable attempt, its content is blanked so the candidate
-  **abstains** from the vote instead of masquerading as a valid text answer.
-
-This is done in portable handler code (not by patching vLLM), so it also salvages
-calls the server-side patch drops. The single-sample path (`WTB_SC_N=1`) returns
-the model's response unchanged.
-
-### 3. Session Ledger (double-entry bookkeeping x dialogue state)
-
-*A bookkeeper never re-reads all correspondence — every essential value is one
-terse ledger line.* Before each history-bearing task, one extra LLM call (temp 0)
-distills the dialogue so far into at most 12 telegraphic fact lines — values the
-user stated (IDs, emails, dates, names, amounts), key tool-returned values, and
-unmet requests — and injects them as a system note **immediately before the
-current user turn** (the recency position). The full dialogue stays in context;
-the ledger only re-surfaces the essentials where attention is strongest.
-
-This directly targets the paper's *Self-Conditioning Bias / Attention Dilution*
-finding (accuracy decays 45%→26% across turns as history buries salient facts),
-and unlike the triage prompt it is **non-prescriptive**: it records what is
-known, never what to do — so it cannot narrow the model's decision policy.
-Failures degrade gracefully (ledger generation errors are skipped; a `NONE`
-ledger is not injected).
-
-### 4. Per-turn latent task state
-
-`base_handler.py` now rebuilds a compact inference-time state before every
-step from the current user message, visible assistant/tool history, prior tool
-outputs, surfaced facts, and tool schemas. It records the current goal,
-workflow stage, provenance-backed values, missing required values, the last
-successful tool and family, feasible tool families, and a local tool-or-chat
-preference. Clarification is a selected-path outcome, not a state-selected
-mode. It neither predicts future turns nor adds a prompt-only policy.
-
-The state gives otherwise tied consensus candidates a tool-first preference,
-but it never lets a missing slot from an unrelated schema force clarification.
-Clarification is allowed only when the model's *selected* tool path contains a
-required value with no provenance receipt. Tool-family continuity is used only
-as a consensus tie-breaker after the existing schema and grounding checks. The
-state and selected-path commitment proof are written to the inference log for
-inspection. Argument receipts consult this provenance first and use text
-containment only when no state receipt exists.
-
-## Configuration
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `WTB_SC_N` | 5 | candidates per step; `1` disables voting entirely |
-| `WTB_SC_TEMP` | 0.8 | temperature of the diversity samples |
-| `WTB_SYS_MODE` | `triage` | `triage` = behavioral protocol prompt; `minimal` = bare `Current Date:` exactly like the original benchmark |
-| `WTB_LEDGER` | 1 | `1` = inject the Session Ledger; `0` = off |
-
-### Suggested experiment matrix
-
-| Run | Config | Isolates |
-|---|---|---|
-| baseline | (committed `score/`) | raw model |
-| voting only | `WTB_SYS_MODE=minimal WTB_LEDGER=0` | pure capability elicitation |
-| ledger, no prompt | `WTB_SYS_MODE=minimal WTB_LEDGER=1` | the non-prescriptive hypothesis |
-| full | defaults | everything combined |
-
-Use a fresh `--result-dir`/`--score-dir` per run — generation resumes from and
-skips any ids already present in a result dir.
-
-## Running on SOL
-
-See `SOL_VLLM_GUIDE.md` for the full interactive-session walkthrough. In short,
-after starting the vLLM server (with `--enable-auto-tool-choice --tool-call-parser
-hermes`, and `python3 patch_vllm.py` applied once):
-
-```bash
-cd WildToolBench/wild-tool-bench
-cp .env.example .env    # one-time; the gitignored .env is not carried by git pull
-python3 -u -m wtb.openfunctions_evaluation \
-  --model Qwen/Qwen2.5-7B-Instruct --num-threads 4 --result-dir result_consensus
-python3 -u -m wtb.eval_runner \
-  --model Qwen_Qwen2.5-7B-Instruct --result-dir result_consensus --score-dir score_consensus
+```python
+{"messages": [...], "tools": [...]}
 ```
 
-Notes:
-- Results go to **`result_consensus/` + `score_consensus/`** so the committed
-  baseline in `result/` + `score/` stays intact for comparison. (The generator
-  skips ids that already have results, so re-using `result/` would silently skip
-  the whole run.)
-- The scorer takes the **underscore** form of the model name (`Qwen_Qwen2.5-7B-Instruct`).
-- Generation resumes from partial results — if the job hits the time limit, just rerun it.
-- Ablation: prefix inference with `WTB_SC_N=1` and use fresh result/score dirs to
-  isolate the triage-prompt effect; comparing against `score/` isolates the total effect.
+It rejects evaluation-only or unknown keys, including:
+
+- `answer_list` / `english_answer_list`;
+- task and test IDs;
+- gold/expected values;
+- score fields;
+- tool-call graphs;
+- prior answer-list objects.
+
+The WTB evaluator still uses the current task's answer list outside CAV to score
+the emitted action and provide simulated tool observations. This data is never
+passed to the controller or model.
+
+WTB's official teacher-forced prior-turn history remains ordinary visible
+conversation history. CAV does not convert it into ledger, state, policy, or
+extra system messages.
+
+## Why this is benchmark-agnostic
+
+CAV does not classify a turn as WTB Chat, Clarify, Single, or Multi. It asks
+four universal deployment questions:
+
+- What changed?
+- What evidence supports each value?
+- Which actions are executable now?
+- Which actions already completed?
+
+These questions also apply to real conversations containing corrections,
+references, interruptions, changing goals, missing details, and dependent tools.
+
+## Runtime and configuration
+
+`WTB_CAV_WORKERS` defaults to `8`. The present implementation uses at most two
+concurrent diagnostic requests per tool-emitting step; the value is a ceiling,
+not eight model copies. A single shared vLLM model server can batch the requests.
+
+CAV costs:
+
+- one normal generation for every step;
+- up to two concurrent diagnostic generations for a tool anchor;
+- one text-only generation only when intervention is proven.
+
+## Files
+
+- `wtb/model_handler/cav.py` — standalone controller and firewall;
+- `wtb/model_handler/base_handler.py` — native WTB history plus runtime-only CAV integration;
+- `wtb/model_handler/api_inference/oai.py` — model-authored text fallback;
+- `tests/test_cav.py` — benchmark-independent unit tests.
+
+## Validation and scoring discipline
+
+Implemented tests verify:
+
+- evaluation-only data is rejected;
+- the original date-only system prompt is preserved;
+- supported anchors remain unchanged;
+- derived representations require counterfactual support;
+- action momentum falls back to model-authored text;
+- stale exact repeats are blocked while causally requested repeats remain allowed;
+- unsupported dependent calls are removed from the executable frontier;
+- unknown and unsupported optional arguments are removed.
+
+Do not tune CAV on WTB results if WTB is intended to remain an untouched test.
+The existing repository has already been repeatedly developed against all 1,024
+WTB tasks, so the next WTB score must be reported as exploratory/development-set
+performance. Confirm generality on a frozen, independent messy-intent test set.
+
+Primary target: session accuracy. Also report task accuracy, accomplishment
+progress, optimal-path accuracy, task-type breakdown, baseline fixes, and
+baseline regressions; a session gain alone does not prove every other metric
+improved.

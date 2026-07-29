@@ -8,16 +8,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from overrides import final
 
 from wtb.checker_utils import _normalize_str
+from wtb.model_handler.cav import CAVController
 from wtb.tool_call_graph import ToolCallGraph
 from wtb.utils import sort_key, load_file, generate_random_string
 from wtb.constant import PROMPT_PATH
 
 
-# Ledger-and-Receipts protocol. Prior turns are replayed as a compact
-# verified Ledger (one row per closed turn: task -> action -> result -> how
-# it closed) instead of a raw transcript, and every argument value must
-# carry a receipt. Benchmark-agnostic: it encodes a general tool-use
-# discipline, not rules fitted to specific test cases.
+# Preserve the benchmark's original system input exactly.  CAV operates outside
+# the prompt and receives only the native messages and supplied tool schemas.
 SYSTEM_PROMPT_TEMPLATE = "Current Date: {env_info}"
 
 
@@ -39,6 +37,10 @@ class BaseHandler:
         # and the task was failing, 58 were failing regardless, and 5 were
         # passing. Set WTB_ASK_GATE=0 to disable.
         self.ask_gate = os.getenv("WTB_ASK_GATE", "1").strip().lower() not in ("0", "false", "")
+        # CAV uses at most two concurrent diagnostic views today.  The higher
+        # ceiling leaves room for per-source causal receipts without changing
+        # the public interface or loading another model instance.
+        self.cav_workers = int(os.getenv("WTB_CAV_WORKERS", "8"))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         if isinstance(arguments_dict, str):
@@ -1195,6 +1197,39 @@ class BaseHandler:
     def _parse_api_response(self, api_response):
         raise NotImplementedError
 
+    def _cav_generate(self, runtime_data):
+        """Run CAV on the strict messages+tools runtime interface."""
+
+        def generate(runtime_view):
+            api_response, latency = self._request_tool_call(runtime_view)
+            parsed = self._normalize_response(
+                dict(self._parse_api_response(api_response))
+            )
+            parsed["latency"] = latency
+            return parsed
+
+        def generate_text(runtime_view):
+            if hasattr(self, "_request_text_candidate"):
+                return self._request_text_candidate(runtime_view)
+            if hasattr(self, "_request_text_only"):
+                content = self._request_text_only(runtime_view)
+                return {
+                    "reasoning_content": None,
+                    "content": content,
+                    "tool_calls": None,
+                    "input_token": 0,
+                    "output_token": 0,
+                    "latency": 0.0,
+                }
+            return None
+
+        controller = CAVController(
+            generate=generate,
+            generate_text=generate_text,
+            max_workers=self.cav_workers,
+        )
+        return controller.decide(runtime_data)
+
     def convert_to_tool(self, tools):
         tools = json.dumps(tools, ensure_ascii=False).replace('"type": "float"', '"type": "number"')
         tools = json.loads(tools)
@@ -1655,40 +1690,114 @@ class BaseHandler:
             print(f"Clarification re-prompt failed, keeping original call: {e}", flush=True)
             return None
 
+    def _add_action_observation(self, task, answer_list, consecutive_tool_messages):
+        """Reconstruct WTB's official teacher-forced visible history.
+
+        This is evaluation plumbing, not a CAV input feature: only prior,
+        already-visible turns are rendered as ordinary user/assistant/tool
+        messages.  The current task's answer list is never rendered.
+        """
+        tool_call_graph = ToolCallGraph(answer_list)
+        tool_call_graph.add_node_list()
+        tool_call_graph.generate_all_path()
+        optimal_path = tool_call_graph.optimal_path_list[0]
+
+        current_messages = [{"role": "user", "content": task}]
+        for idx_action_list in optimal_path:
+            format_action_list = []
+            observation_list = []
+            for idx in idx_action_list:
+                answer = answer_list[idx]
+                action = answer["action"]
+                action_name = action["name"]
+                observation = answer["observation"]
+                if action_name == "ask_user_for_required_parameters":
+                    assert len(idx_action_list) == 1
+                    current_messages.extend([
+                        {"role": "assistant", "content": observation},
+                        {"role": "user", "content": answer["user_input"]},
+                    ])
+                elif action_name == "prepare_to_answer":
+                    assert len(idx_action_list) == 1
+                    current_messages.append({
+                        "role": "assistant",
+                        "content": observation,
+                    })
+                else:
+                    format_action_list.append({
+                        "type": "function",
+                        "function": {
+                            "name": action_name,
+                            "arguments": deepcopy(action["arguments"]),
+                        },
+                    })
+                    observation_list.append(observation)
+
+            if format_action_list:
+                current_messages.append({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": format_action_list,
+                })
+                if consecutive_tool_messages:
+                    current_messages.extend(
+                        {"role": "tool", "content": observation}
+                        for observation in observation_list
+                    )
+                else:
+                    current_messages.append({
+                        "role": "tool",
+                        "content": json.dumps(observation_list, ensure_ascii=False),
+                    })
+        return current_messages
+
+    def _convert_to_tool_calls(self, messages):
+        """Add transport IDs without adding any prompt or policy text."""
+        pending_ids = []
+        converted = []
+        for original in messages:
+            message = deepcopy(original)
+            role = message["role"]
+            if role == "assistant" and message.get("tool_calls"):
+                tool_calls = []
+                for original_call in message["tool_calls"]:
+                    call = deepcopy(original_call)
+                    arguments = call["function"].get("arguments", {})
+                    if isinstance(arguments, dict):
+                        call["function"]["arguments"] = json.dumps(
+                            arguments, ensure_ascii=False
+                        )
+                    if "id" not in call:
+                        call["id"] = "toolu_bdrk_" + generate_random_string(24)
+                    pending_ids.append(call["id"])
+                    tool_calls.append(call)
+                message["tool_calls"] = tool_calls
+            elif role == "tool":
+                if not pending_ids:
+                    raise ValueError("tool observation has no preceding tool call")
+                message["tool_call_id"] = pending_ids.pop(0)
+                message["content"] = json.dumps(
+                    message.get("content"), ensure_ascii=False
+                )
+            converted.append(message)
+        return converted
+
     def _pre_messages_processing(self, env_info, current_task, history_tasks, history_answer_lists, consecutive_tool_messages=True, tools=None):
+        """Build the unmodified WTB model input.
+
+        The only system message is the benchmark's supplied current date.
+        No ledger, state summary, behavioral rule, task label, or evaluator
+        signal is injected.
+        """
         messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(env_info=env_info)}]
-        ledger = self._build_deterministic_ledger(history_tasks, history_answer_lists)
-        if ledger:
-            messages.append({
-                "role": "system",
-                "content": "Ledger - verified record of this session's prior turns "
-                           "(task -> action taken -> result -> how it closed):\n\n" + ledger,
-            })
-        facts = self._extract_observation_facts(history_answer_lists)
-        if facts:
-            fact_str = "\n".join(f"- {f}" for f in facts[:40])
-            messages.append({
-                "role": "system",
-                "content": "Surfaced Observation Facts (use directly for referential ID binding):\n" + fact_str
-            })
+        for history_task, history_answer_list in zip(history_tasks, history_answer_lists):
+            messages.extend(self._add_action_observation(
+                history_task,
+                history_answer_list,
+                consecutive_tool_messages,
+            ))
         messages.append({"role": "user", "content": current_task})
-
-        dialogue_state = self._build_dialogue_state(tools, messages, history_answer_lists)
-        if facts or ledger:
-            d_state_lines = [
-                "Dialogue State:",
-                f"- known_facts: {len(dialogue_state['known_facts'])} items",
-                f"- feasible_tools: {dialogue_state['feasible_tools']}",
-                f"- unresolved_required_slots: {dialogue_state['unresolved_required_slots']}",
-            ]
-            if dialogue_state['clarify_slot']:
-                d_state_lines.append(f"- clarify_slot: {dialogue_state['clarify_slot']}")
-            messages.insert(-1, {
-                "role": "system",
-                "content": "\n".join(d_state_lines)
-            })
-
-        return messages, dialogue_state
+        return self._convert_to_tool_calls(messages)
 
     def inference(self, test_entry: dict):
         return self.inference_multi_turn(test_entry)
@@ -1707,7 +1816,7 @@ class BaseHandler:
         for task_idx, (current_task, answer_list) in enumerate(zip(tasks, answer_lists)):
             history_tasks = tasks[:task_idx]
             history_answer_lists = answer_lists[:task_idx]
-            messages, dialogue_state = self._pre_messages_processing(
+            messages = self._pre_messages_processing(
                 env_info, current_task, history_tasks, history_answer_lists, tools=tools
             )
 
@@ -1717,8 +1826,6 @@ class BaseHandler:
                 "tools": tools,
                 "messages": messages,
                 "answer_list": answer_list,
-                "history_answer_lists": history_answer_lists,
-                "dialogue_state": dialogue_state
             }
             result_data = self.inference_and_eval_multi_step(inference_data)
             all_task_result_data.append(result_data)
@@ -1771,79 +1878,23 @@ class BaseHandler:
         input_token_count = []
         output_token_count = []
         while True:
-            # TTM Core Reasoning Loop: Update Task State & Detect Transition per step
-            task_state = self._update_task_state(
-                tools, messages, inference_data.get("history_answer_lists")
-            )
-            policy = self._select_interaction_policy(task_state)
-
-            inference_data["dialogue_state"] = task_state
-            inference_data["ttm_task_state"] = task_state
-            inference_data["ttm_policy"] = policy
-            dialogue_state = task_state
-
             print("-" * 100, flush=True)
             print(
                 f"ID: {test_entry_id.replace('wild_tool_bench_', '')}, Task: {task_idx}, Step: {step}", flush=True
             )
-            # print(f"Output：", flush=True)
-            # for message in messages:
-            #     print(json.dumps(message, ensure_ascii=False, indent=4) + "\n", flush=True)
-            model_response_data = self._consensus_generate(inference_data)
+            # Evaluator firewall: CAV receives exactly the deployable runtime
+            # interface.  answer_list, task ids, graph state, and scores remain
+            # in this outer evaluation loop and cannot reach the controller.
+            runtime_data = {
+                "messages": deepcopy(messages),
+                "tools": deepcopy(tools),
+            }
+            model_response_data = self._cav_generate(runtime_data)
             query_latency = model_response_data.get("latency", 0)
-            consensus_log = model_response_data.pop("consensus_log", None)
+            cav_log = model_response_data.pop("cav_log", None)
             reasoning_content = model_response_data.get("reasoning_content")
             content = model_response_data.get("content")
             tool_calls = model_response_data.get("tool_calls")
-            dialogue_state = inference_data.get("dialogue_state")
-            if tool_calls is not None:
-                # Schema cleaner + receipt gate (ungrounded optionals dropped)
-                cleaned_tool_calls = []
-                for tc in tool_calls:
-                    try:
-                        tc_name = tc["function"]["name"]
-                        tc_args_str = tc["function"]["arguments"]
-                        if isinstance(tc_args_str, str):
-                            tc_args = json.loads(tc_args_str)
-                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args, tools, messages, step, inference_log, dialogue_state=dialogue_state)
-                            tc["function"]["arguments"] = json.dumps(cleaned_args, ensure_ascii=False)
-                        elif isinstance(tc_args_str, dict):
-                            cleaned_args = self._clean_and_verify_call(tc_name, tc_args_str, tools, messages, step, inference_log, dialogue_state=dialogue_state)
-                            tc["function"]["arguments"] = cleaned_args
-                    except Exception as e:
-                        print(f"Cleaner error: {e}", flush=True)
-                    cleaned_tool_calls.append(tc)
-                tool_calls = self._topological_sort_tool_calls(cleaned_tool_calls, tools)
-                model_response_data["tool_calls"] = tool_calls
-
-                selected_commitment = self._assess_selected_commitment(
-                    tool_calls, tools, json.dumps(messages, ensure_ascii=False), dialogue_state=dialogue_state
-                )
-                inference_log.setdefault("commitment_notes", []).append({
-                    "step": step,
-                    "selected_commitment": selected_commitment,
-                })
-
-                # Ask-instead-of-guess: if a REQUIRED value was invented rather
-                # than taken from the conversation or the selected commitment's
-                # provenance, hand the turn back to the user rather than acting
-                # on the guess.  Global state missingness is never sufficient.
-                if self.ask_gate:
-                    unfounded = selected_commitment["unfounded_required"]
-                    if unfounded:
-                        clarification = self._authored_clarification(inference_data, content)
-                        if clarification:
-                            inference_log.setdefault("ask_gate_notes", []).append({
-                                "step": step,
-                                "unfounded_required": unfounded,
-                                "suppressed_calls": [
-                                    tc.get("function", {}).get("name") for tc in tool_calls
-                                ],
-                            })
-                            content = clarification
-                            tool_calls = None
-                            model_response_data["content"] = content
-                            model_response_data["tool_calls"] = None
             input_token = model_response_data["input_token"]
             output_token = model_response_data["output_token"]
             latency.append(query_latency)
@@ -1859,7 +1910,6 @@ class BaseHandler:
                 "inference_input": {
                     "messages": deepcopy(messages),
                     "tools": tools,
-                    "latent_task_state": deepcopy(dialogue_state),
                 },
                 "inference_output": {
                     "reasoning_content": reasoning_content,
@@ -1867,8 +1917,8 @@ class BaseHandler:
                     "tool_calls": tool_calls
                 }
             }
-            if consensus_log is not None:
-                inference_log[f"step_{step}"]["consensus"] = consensus_log
+            if cav_log is not None:
+                inference_log[f"step_{step}"]["cav"] = cav_log
 
             if tool_calls is None or len(tool_calls) == 0:
                 if content is None or content == "":
