@@ -8,14 +8,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from overrides import final
 
 from wtb.checker_utils import _normalize_str
-from wtb.model_handler.cav import CAVController
+from wtb.model_handler.cogfs import COGFSController
 from wtb.tool_call_graph import ToolCallGraph
 from wtb.utils import sort_key, load_file, generate_random_string
 from wtb.constant import PROMPT_PATH
 
 
-# Preserve the benchmark's original system input exactly.  CAV operates outside
-# the prompt and receives only the native messages and supplied tool schemas.
+# Preserve the benchmark's original system input exactly.  COG-FS operates
+# outside the prompt and receives only native messages and supplied schemas.
 SYSTEM_PROMPT_TEMPLATE = "Current Date: {env_info}"
 
 
@@ -37,10 +37,13 @@ class BaseHandler:
         # and the task was failing, 58 were failing regardless, and 5 were
         # passing. Set WTB_ASK_GATE=0 to disable.
         self.ask_gate = os.getenv("WTB_ASK_GATE", "1").strip().lower() not in ("0", "false", "")
-        # CAV uses at most two concurrent diagnostic views today.  The higher
-        # ceiling leaves room for per-source causal receipts without changing
-        # the public interface or loading another model instance.
-        self.cav_workers = int(os.getenv("WTB_CAV_WORKERS", "8"))
+        # One shared model serves the untouched anchor and subtractive COG-FS
+        # shadow views.  The value is both the concurrency ceiling and the hard
+        # per-step model-call budget; it never creates eight model copies.
+        self.cogfs_workers = int(os.getenv(
+            "WTB_COGFS_WORKERS",
+            os.getenv("WTB_CAV_WORKERS", "8"),
+        ))
 
     def _clean_tool_call_arguments(self, tool_name, arguments_dict, tools):
         if isinstance(arguments_dict, str):
@@ -1197,8 +1200,8 @@ class BaseHandler:
     def _parse_api_response(self, api_response):
         raise NotImplementedError
 
-    def _cav_generate(self, runtime_data):
-        """Run CAV on the strict messages+tools runtime interface."""
+    def _cogfs_generate(self, runtime_data):
+        """Run COG-FS on the strict messages+tools runtime interface."""
 
         def generate(runtime_view):
             api_response, latency = self._request_tool_call(runtime_view)
@@ -1223,10 +1226,10 @@ class BaseHandler:
                 }
             return None
 
-        controller = CAVController(
+        controller = COGFSController(
             generate=generate,
             generate_text=generate_text,
-            max_workers=self.cav_workers,
+            max_workers=self.cogfs_workers,
         )
         return controller.decide(runtime_data)
 
@@ -1693,7 +1696,7 @@ class BaseHandler:
     def _add_action_observation(self, task, answer_list, consecutive_tool_messages):
         """Reconstruct WTB's official teacher-forced visible history.
 
-        This is evaluation plumbing, not a CAV input feature: only prior,
+        This is evaluation plumbing, not a COG-FS input feature: only prior,
         already-visible turns are rendered as ordinary user/assistant/tool
         messages.  The current task's answer list is never rendered.
         """
@@ -1882,16 +1885,16 @@ class BaseHandler:
             print(
                 f"ID: {test_entry_id.replace('wild_tool_bench_', '')}, Task: {task_idx}, Step: {step}", flush=True
             )
-            # Evaluator firewall: CAV receives exactly the deployable runtime
+            # Evaluator firewall: COG-FS receives exactly the deployable runtime
             # interface.  answer_list, task ids, graph state, and scores remain
             # in this outer evaluation loop and cannot reach the controller.
             runtime_data = {
                 "messages": deepcopy(messages),
                 "tools": deepcopy(tools),
             }
-            model_response_data = self._cav_generate(runtime_data)
+            model_response_data = self._cogfs_generate(runtime_data)
             query_latency = model_response_data.get("latency", 0)
-            cav_log = model_response_data.pop("cav_log", None)
+            cogfs_log = model_response_data.pop("cogfs_log", None)
             reasoning_content = model_response_data.get("reasoning_content")
             content = model_response_data.get("content")
             tool_calls = model_response_data.get("tool_calls")
@@ -1917,8 +1920,8 @@ class BaseHandler:
                     "tool_calls": tool_calls
                 }
             }
-            if cav_log is not None:
-                inference_log[f"step_{step}"]["cav"] = cav_log
+            if cogfs_log is not None:
+                inference_log[f"step_{step}"]["cogfs"] = cogfs_log
 
             if tool_calls is None or len(tool_calls) == 0:
                 if content is None or content == "":

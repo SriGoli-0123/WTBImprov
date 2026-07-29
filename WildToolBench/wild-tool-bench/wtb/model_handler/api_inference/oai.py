@@ -46,9 +46,9 @@ class OpenAIHandler(BaseHandler):
     def _request_text_candidate(self, inference_data):
         """Generate model-authored text on the unchanged conversation.
 
-        CAV uses this only after it proves that the proposed tool frontier is
-        non-executable or driven by action inertia.  No corrective prompt,
-        benchmark label, or evaluator feedback is added.
+        COG-FS uses this only when every causally supported tool candidate is
+        non-executable.  No corrective prompt, benchmark label, or evaluator
+        feedback is added.
         """
         api_response, latency = self.generate_with_backoff(
             messages=inference_data["messages"],

@@ -9,41 +9,64 @@ Repo: `SriGoli-0123/WTBImprov`, branch `demo`.
 
 ---
 
-## Current implementation: CAV (unscored)
+## Current implementation: COG-FS (unscored)
 
-The active `demo` method is now **Contrastive Action Verification (CAV)**.
-It supersedes the earlier ledger, TTM, consensus, and hard-gate proposals below;
-those sections remain as historical evidence and negative-result context.
+The active `demo` method is now **Counterfactual Obligation Graph with Frontier
+Synthesis (COG-FS)**. It replaces CAV's veto-oriented decision rule while
+retaining its strict evaluator firewall. The ledger, TTM, consensus, hard-gate,
+and CAV sections below remain as historical and negative-result evidence.
 
-CAV preserves the original date-only system prompt and receives only native
-`messages` plus supplied `tools`. The controller explicitly rejects evaluator
-objects such as answer lists, task IDs, graph state, expected values, and scores.
+COG-FS preserves the original date-only system prompt and receives exactly
+native `messages` plus the supplied `tools`. It rejects evaluator objects such
+as answer lists, IDs, graph state, expected values, and scores.
 
-For a tool-emitting anchor, CAV compares two concurrent diagnostic views:
+It first generates an untouched anchor, then produces subtractive views that
+remove the latest event, prior call syntax, or one general clause of the latest
+user message. A call's disappearance identifies which user event or clause
+caused it. Unlike CAV, calls suppressed in the anchor may be recovered from a
+shadow, confirmed on the untouched conversation with their schema isolated, and
+combined with other supported calls into the complete currently executable
+frontier. A narrow projection path can also recover a single well-supported
+tool obligation from a text anchor without exposing any benchmark category.
 
-1. the conversation with the latest user content hidden or latest tool execution removed;
-2. the full conversation with prior tool-call syntax neutralized but raw results retained.
+Before emission, every call is checked against the supplied schema and visible
+evidence. Unsupported required values suppress a call; unknown keys and
+unsupported optional values are removed; completed exact calls require a new
+causal authorization. If intervention leaves no executable action, the same
+model generates text from the unchanged conversation with tool use disabled.
+No behavioral or corrective prompt is inserted.
 
-It uses agreement between those views to create per-argument causal receipts,
-then emits only the schema-valid, provenance-supported calls that are executable
-now. Completed calls are blocked unless the latest event causally re-authorizes
-their repetition. The baseline is preserved unless a contradiction is
-mechanically proven. If no call remains or both views prove action momentum,
-the same model produces text on the unchanged conversation with tools disabled;
-no corrective prompt is inserted.
+The hard budget is eight generations per decision, served by one shared model:
+one anchor plus no more than seven shadows, confirmations, projections, or
+fallbacks. Identical views are deduplicated.
 
 Implementation:
 
-- `WildToolBench/wild-tool-bench/wtb/model_handler/cav.py`
+- `WildToolBench/wild-tool-bench/wtb/model_handler/cogfs.py`
 - integration in `base_handler.py`
 - text fallback in `api_inference/oai.py`
-- ten unit tests in `tests/test_cav.py`
+- fifteen unit tests in `tests/test_cogfs.py`
 
-This code has **not** been run or scored on WTB. Because this repository has
-already been adaptively developed against the full benchmark, any next WTB run
-is exploratory/development-set evidence, not an untouched generalization result.
+COG-FS has **not** been run or scored on WTB. The promotion target is to exceed
+the recorded best of **12/256 sessions** and **404/1024 tasks** without merely
+trading away task-type, accomplishment-progress, or optimal-path performance.
 
-See `IMPROVEMENT_METHOD.md` for the exact algorithm and evaluation firewall.
+The immediately preceding CAV run was a negative result:
+
+- task: **397/1024 (38.77%)**
+- session: **6/256 (2.34%)**
+- Single-Tool 94/256; Multi-Tool 41/256; Clarify 52/256; Chat 210/256
+- accomplishment progress: 158/597 (26.47%)
+- optimal path: 39/240 (16.25%)
+
+This confirmed that stronger Chat performance alone is insufficient: session
+accuracy requires recovering complete multi-action obligations while avoiding
+regressions in tool execution.
+
+Because this repository has already been adaptively developed against the full
+benchmark, any next WTB run is exploratory/development-set evidence, not an
+untouched generalization result. See `IMPROVEMENT_METHOD.md` for the exact
+algorithm and firewall.
 
 ---
 
@@ -306,10 +329,12 @@ and even then >15% needs task accuracy ≈62%, which likely requires in-domain
 
 ---
 
-## 7. Historical config / commands (retired)
+## 7. Configuration and commands
 
 The variables below describe earlier experiments and are not part of active
-CAV selection. Active CAV has one runtime ceiling: `WTB_CAV_WORKERS=8`.
+COG-FS selection. COG-FS has one active runtime control:
+`WTB_COGFS_WORKERS=8`. It is a hard per-decision generation budget and a
+concurrency ceiling for one shared model, not a model-copy count.
 
 Env knobs (in `wtb/model_handler/base_handler.py`):
 | Var | Default | Meaning |
@@ -319,7 +344,7 @@ Env knobs (in `wtb/model_handler/base_handler.py`):
 | `WTB_SYS_MODE` | `triage` | `minimal` = original bare date prompt (**use `minimal`**) |
 | `WTB_LEDGER` | 1 | `0` = off (**use 0** — measured null) |
 
-Recommended run (post-findings baseline-equivalent + future gates):
+Recommended COG-FS run:
 ```bash
 python3 patch_vllm.py     # once per vLLM install, then restart server
 python3 -m vllm.entrypoints.openai.api_server \
@@ -328,27 +353,32 @@ python3 -m vllm.entrypoints.openai.api_server \
 
 cd WildToolBench/wild-tool-bench
 cp .env.example .env
-WTB_SC_N=1 WTB_SYS_MODE=minimal WTB_LEDGER=0 \
+WTB_COGFS_WORKERS=8 \
 python3 -u -m wtb.openfunctions_evaluation \
-  --model Qwen/Qwen2.5-7B-Instruct --num-threads 4 --result-dir result_X
+  --model Qwen/Qwen2.5-7B-Instruct --num-threads 8 --result-dir result_cogfs_fresh
 python3 -u -m wtb.eval_runner \
-  --model Qwen_Qwen2.5-7B-Instruct --result-dir result_X --score-dir score_X
+  --model Qwen_Qwen2.5-7B-Instruct \
+  --result-dir result_cogfs_fresh --score-dir score_cogfs_fresh
 ```
 
-Pilot mode (20 sessions, ~30 GPU-min): populate `test_case_ids_to_generate.json`,
-add `--run-ids`. Use this before any full run.
+The result and score directory names must be new. WTB resumes/skips IDs already
+present in an existing result directory.
 
 ---
 
-## 8. Open questions / next steps (priority order)
+## 8. Next evaluation steps
 
-1. **Build Gate 1 (grammar lock)** — only intervention with a guaranteed mechanical
-   floor, depth-invariant, no model judgment, immune to the reviewer objection.
-2. **Build Gate 2 conservatively**, validated against the 12% false-block measurement.
-3. **CQR pilot** (20 sessions) — cheap test of the discrimination hypothesis.
-4. **Transfer-learning SFT** (LoRA on Qwen2.5-7B) from public FC corpora + tau2 rollouts.
-5. Re-measure the near-miss (3/4) cohort after each change — it is the leading indicator
-   for session accuracy.
+1. Run COG-FS once in a fresh result directory with the evaluator firewall
+   unchanged.
+2. Compare against the best recorded **12 sessions / 404 tasks**, not only the
+   immediately preceding 6-session CAV run.
+3. Report session and task totals plus every task type, layer, turn subtype,
+   accomplishment-progress, and optimal-path metric.
+4. Diff individual fixes and regressions, especially 3/4-session near misses,
+   omitted multi-tool calls, false Chat-to-tool conversions, and duplicate
+   actions.
+5. Freeze COG-FS before evaluating on an independent messy-intent suite so the
+   generality claim does not depend on repeated adaptation to WTB.
 
 **Analysis principle that produced everything above:** measure the failure distribution
 BEFORE proposing a fix, and test the proposed mechanism against currently-PASSING tasks
