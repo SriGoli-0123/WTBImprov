@@ -110,34 +110,52 @@ benchmark.
 
 ## Running it
 
+First start the model server in its own terminal and leave it running:
+
+```bash
+python3 -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct --port 8000 --dtype auto \
+    --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+`.env` must point at it (`OPENAI_BASE_URL=http://localhost:8000/v1`).
+
+In a second terminal, pick the ten sessions to work on, then run both arms.
 The wrapper is off unless you ask for it, so the same command produces both
 numbers:
 
 ```bash
-# baseline
-python wtb/_llm_response_generation.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_baseline --run-ids
-python wtb/eval_runner.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_baseline --score-dir score_baseline
+python3 method/make_batches.py --batch 1     # writes the ten ids the runner reads
 
-# with the method
-WTB_METHOD=grounded python wtb/_llm_response_generation.py \
-    --model Qwen/Qwen2.5-7B-Instruct --result-dir result_grounded --run-ids
-python wtb/eval_runner.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_grounded --score-dir score_grounded
+# baseline arm
+python3 -u -m wtb.openfunctions_evaluation --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_b1_baseline --run-ids
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_b1_baseline --score-dir score_b1_baseline
+
+# method arm -- identical, one environment variable
+WTB_METHOD=grounded python3 -u -m wtb.openfunctions_evaluation \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_b1_grounded --run-ids
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_b1_grounded --score-dir score_b1_grounded
 ```
 
-Working in batches of ten:
+Run the modules with `-m`; running the files directly breaks their imports.
+Use a fresh `--result-dir` per arm per batch, or old results are silently
+reused and the comparison is meaningless.
+
+Batches:
 
 ```bash
-python method/make_batches.py            # once: 40 dev sessions, 4 batches
-python method/make_batches.py --batch 1  # load batch 1, then run with --run-ids
+python3 method/make_batches.py            # once: 40 dev sessions, 4 batches
+python3 method/make_batches.py --batch 2  # move on once batch 1 is understood
 ```
 
 Reading the result:
 
 ```bash
-python method/compare.py score_baseline/<model> score_grounded/<model>
+python3 method/compare.py score_b1_baseline/<model> score_b1_grounded/<model>
 ```
 
 `compare.py` reports how many turns were fixed and how many were broken,

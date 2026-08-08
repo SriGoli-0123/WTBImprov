@@ -17,7 +17,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DATA = os.path.join(ROOT, "data", "Wild-Tool-Bench.jsonl")
 SPLIT = os.path.join(HERE, "dev_split.json")
-RUNNER_IDS = os.path.join(ROOT, "wtb", "test_case_ids_to_generate.json")
+# The runner resolves this as wtb/../test_case_ids_to_generate.json -- i.e. the
+# copy at the top of wild-tool-bench, NOT the one inside wtb/. See
+# wtb/constant.py:TEST_IDS_TO_GENERATE_PATH. Writing to the wrong one silently
+# runs whatever the top-level file happens to contain.
+RUNNER_IDS = os.path.join(ROOT, "test_case_ids_to_generate.json")
 
 DEV_SIZE = 40
 BATCH = 10
@@ -54,6 +58,11 @@ def load_batch(n):
         ids = payload["batches"][key]
     else:
         raise SystemExit(f"no batch {n}; have {list(payload['batches'])} or 'dev'")
+    backup = RUNNER_IDS + ".orig"
+    if os.path.exists(RUNNER_IDS) and not os.path.exists(backup):
+        with open(RUNNER_IDS) as src, open(backup, "w") as dst:
+            dst.write(src.read())
+        print(f"kept a copy of the previous id list at {backup}")
     with open(RUNNER_IDS, "w") as fh:
         json.dump(ids, fh, indent=2)
     print(f"loaded {len(ids)} session ids into {RUNNER_IDS}")
