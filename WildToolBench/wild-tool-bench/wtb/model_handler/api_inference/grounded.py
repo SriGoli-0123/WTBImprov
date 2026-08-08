@@ -175,8 +175,10 @@ _NOT_STATED = "NOT STATED"
 class GroundedHandler(OpenAIHandler):
     """Wraps the model with the five rules described at the top of the file."""
 
-    # how many extra model calls we are willing to spend on one turn
+    # how many extra model calls we are willing to spend deciding the move
     max_checks = 2
+    # how many times we will go back and ask for the calls that are still missing
+    max_coverage_rounds = 3
 
     # ---------------------------------------------------------------- asking
     def _ask(self, messages, tools=None, temperature=None):
@@ -259,29 +261,87 @@ class GroundedHandler(OpenAIHandler):
         return [k for k in _required_of(schema) if k in missing], pin, pout
 
     # -------------------------------------------------------- rule 3 coverage
-    def _uncovered(self, messages, calls):
-        """Did we leave part of the request unhandled?
+    def _checklist(self, messages):
+        """Write down what the user actually asked for, as a numbered list.
 
-        Multi-tool turns fail mostly by stopping early: only 27% of the needed
-        steps get emitted. So the question is about completeness, not accuracy.
+        Having the list on paper is the point. Asking "is anything left, given
+        what you already wrote?" is a much easier question than "what did you
+        forget?", because the second one needs the very breakdown that failed.
         """
-        summary = "\n".join(
-            f"- {c['function']['name']}({c['function']['arguments']})" for c in calls
-        )
         probe = deepcopy(messages) + [{
             "role": "user",
             "content": (
-                f"I am about to make these calls:\n{summary}\n\n"
-                "Does this cover everything the user just asked for? If yes, reply "
-                "COVERED. If something is missing, reply MISSING followed by a short "
-                "phrase naming only what is left out."
+                "List the separate things the user just asked for, one per line, "
+                "numbered. Keep each to a few words. Do not call any tool."
             ),
         }]
         content, _, pin, pout, _ = self._ask(probe, temperature=0.0)
-        text = (content or "").strip()
-        if text.upper().startswith("MISSING"):
-            return text[len("MISSING"):].strip(" :-"), pin, pout
-        return None, pin, pout
+        items = [
+            line.strip()
+            for line in (content or "").splitlines()
+            if re.match(r"\s*\d+[.)]\s*\S", line)
+        ]
+        return items, pin, pout
+
+    def _cover(self, messages, tools, calls):
+        """Rule 3. Keep adding calls until nothing on the list is left over.
+
+        Multi-tool turns fail by stopping early -- only 27% of the required
+        steps get emitted -- so one reminder is not enough. This repeats until
+        the model says it is done, or until the cap is hit.
+        """
+        spent_in = spent_out = 0
+        items, pin, pout = self._checklist(messages)
+        spent_in, spent_out = spent_in + pin, spent_out + pout
+        if len(items) < 2:
+            return calls, spent_in, spent_out  # a single request cannot be half done
+
+        checklist = "\n".join(items)
+        for _ in range(self.max_coverage_rounds):
+            summary = "\n".join(
+                f"- {c['function']['name']}({c['function']['arguments']})" for c in calls
+            )
+            probe = deepcopy(messages) + [{
+                "role": "user",
+                "content": (
+                    f"The user asked for:\n{checklist}\n\n"
+                    f"So far these calls are planned:\n{summary}\n\n"
+                    "Is any numbered item still without a call? If every item is "
+                    "covered, reply DONE and call nothing. Otherwise call only what "
+                    "is still missing."
+                ),
+            }]
+            content, extra, pin, pout, _ = self._ask(probe, tools=tools, temperature=0.0)
+            spent_in, spent_out = spent_in + pin, spent_out + pout
+
+            if not extra or (content or "").strip().upper().startswith("DONE"):
+                break
+
+            added = False
+            for call in extra:
+                fn = call.get("function", {})
+                raw = fn.get("arguments")
+                try:
+                    arguments = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                except json.JSONDecodeError:
+                    continue
+                arguments = _tidy_arguments(arguments, _schema_of(tools, fn.get("name")))
+                if _already_called(messages, fn.get("name"), arguments):
+                    continue
+                fresh = deepcopy(call)
+                fresh["function"]["arguments"] = json.dumps(arguments, ensure_ascii=False)
+                if any(
+                    c["function"]["name"] == fresh["function"]["name"]
+                    and c["function"]["arguments"] == fresh["function"]["arguments"]
+                    for c in calls
+                ):
+                    continue  # already planned; nothing new arrived, so stop
+                calls.append(fresh)
+                added = True
+            if not added:
+                break
+
+        return calls, spent_in, spent_out
 
     # ------------------------------------------------------------------ main
     def _request_tool_call(self, inference_data):
@@ -360,36 +420,8 @@ class GroundedHandler(OpenAIHandler):
                 return _Response(spoken or f"Could you tell me the {pretty}?", None,
                                  tin + pin, tout + pout), latency
 
-        # ---- rule 3: did we cover the whole request?
-        if len(kept) >= 1 and checks < self.max_checks:
-            gap, pin, pout = self._uncovered(messages, kept)
-            tin, tout, checks = tin + pin, tout + pout, checks + 1
-            if gap:
-                _, more, pin, pout, _ = self._ask(
-                    deepcopy(messages) + [{
-                        "role": "user",
-                        "content": (
-                            f"Your calls left this out: {gap}. Make the complete set of calls "
-                            "for the whole request in one go, including the ones you already had."
-                        ),
-                    }],
-                    tools=tools,
-                )
-                tin, tout = tin + pin, tout + pout
-                if more:
-                    rebuilt = []
-                    for call in more:
-                        fn = call.get("function", {})
-                        raw = fn.get("arguments")
-                        try:
-                            arguments = json.loads(raw) if isinstance(raw, str) else (raw or {})
-                        except json.JSONDecodeError:
-                            arguments = {}
-                        arguments = _tidy_arguments(arguments, _schema_of(tools, fn.get("name")))
-                        call = deepcopy(call)
-                        call["function"]["arguments"] = json.dumps(arguments, ensure_ascii=False)
-                        rebuilt.append(call)
-                    if len(rebuilt) >= len(kept):
-                        kept = rebuilt
+        # ---- rule 3: keep going until nothing the user asked for is left over
+        kept, pin, pout = self._cover(messages, tools, kept)
+        tin, tout = tin + pin, tout + pout
 
         return _Response(content, kept, tin, tout), latency

@@ -52,7 +52,7 @@ Five rules. Each one is a sentence.
 
 1. **If the conversation already answers the user, reply in words.**
 2. **If a required value is not in the conversation, ask for it in words.**
-3. **If a call is needed, check the whole request is covered.**
+3. **If a call is needed, keep going until nothing asked for is left over.**
 4. **Fix the shape of the call: real keys only, declared types, declared order.**
 5. **Never call something whose result is already in the conversation.**
 
@@ -60,6 +60,19 @@ Rules 1 and 2 are the two halves of the yes/no decision, and they are where
 the 416 wrong-action turns live. Rule 3 exists because multi-tool turns fail
 by stopping early -- only 27% of the required steps get emitted. Rules 4 and 5
 are bookkeeping that costs nothing.
+
+### Why rule 3 repeats
+
+The model writes down what the user asked for as a numbered list, then is
+asked, with its own list and its own calls in front of it, whether anything is
+still uncovered -- and that repeats until it says it is done. Asking once does
+not work, because the model that missed the third item is the same model being
+asked to notice the third item is missing. "Is anything left, given what you
+already wrote?" is a much easier question than "what did you forget?", and
+repeating it converges instead of taking one shot.
+
+A turn with only one requested outcome skips the check entirely; a single
+request cannot be half done.
 
 ### Why rule 2 asks for a quote
 
@@ -73,11 +86,27 @@ than copied, and treating those as missing would break working turns.
 
 ### Why this should keep paying off on a better model
 
-Rules 1, 2 and 3 ask the model questions. A stronger model answers them
-better, so the wrapper gets more accurate rather than less useful. Rules 4 and
-5 are fixed repairs that a stronger model will need less often; they are a
-floor, not the engine. Nothing here is tuned to a particular model, and
-nothing is trained on this benchmark.
+The rules that last are the ones that **spot a problem in code and hand the
+work back to the model**. Rules 2 and 3 do that: the wrapper decides that a
+value has no source, or that an item has no call, and then the model resolves
+it. A better model resolves it better, so the wrapper gets more useful rather
+than less.
+
+The rules that do not last are the ones that replace the model's judgment with
+a fixed heuristic. Rule 5 is one of those, and half of rule 1 is too: a strong
+model already answers the user correctly nearly every time, so that repair has
+nothing left to do. They are a floor, not the engine.
+
+This is worth stating plainly because it is checkable: run each rule on and
+off, on a small model and a large one. Any rule whose effect disappears on the
+larger model is a patch, and should be reported as one rather than folded into
+the headline. The two rules aimed at asking-instead-of-guessing and at
+finishing the job are the ones expected to survive, because those are still
+unsolved at the frontier -- the best model in the paper gets 52.3% on ask-turns
+and 40.2% on multi-tool turns.
+
+Nothing here is tuned to a particular model, and nothing is trained on this
+benchmark.
 
 ## Running it
 
@@ -135,6 +164,16 @@ Reaching 50 sessions needs roughly 68% of turns correct. No model in the
 original paper exceeds 61%. That is the honest price of the target, and it is
 only plausible because most of what is being fixed is mechanical rather than a
 limit on what the model knows.
+
+One caution about that table. Sessions do better than you would expect from
+multiplying the per-type numbers together, because a session that goes well
+tends to go well throughout. But that bonus shrinks as a model gets better:
+it is 2.63x here, 1.84x for a tuned 7B, 1.51x for GPT-4o and 1.28x for the
+best model in the paper. If this wrapper makes the model behave like a
+stronger one, the bonus should fall with it. Planning on it staying high is
+double-counting. The number to plan for is nearer 40 sessions than 56, and
+the claim should rest on the per-type accuracies, which are measured, rather
+than on a multiplier that moves in the wrong direction as things improve.
 
 The last two batches are for confirming, not for tuning. The sealed sessions
 get run once, at the end.
