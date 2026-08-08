@@ -35,6 +35,7 @@ better. Rules 4-5 are pure bookkeeping and act as a floor.
 """
 
 import json
+import os
 import re
 from copy import deepcopy
 
@@ -175,10 +176,19 @@ _NOT_STATED = "NOT STATED"
 class GroundedHandler(OpenAIHandler):
     """Wraps the model with the five rules described at the top of the file."""
 
-    # how many extra model calls we are willing to spend deciding the move
-    max_checks = 2
-    # how many times we will go back and ask for the calls that are still missing
-    max_coverage_rounds = 3
+    # How many extra model calls we are willing to spend deciding the move,
+    # and how many times we will go back for the calls that are still missing.
+    #
+    # Both can be turned down from the shell for a cheaper run, without
+    # touching this file:
+    #
+    #     WTB_MAX_CHECKS=1 WTB_COVERAGE_ROUNDS=1 WTB_METHOD=grounded ...
+    #
+    # Turning coverage down to 1 gives back the single-shot version, which is
+    # the thing rule 3 exists to replace -- so if you do it to save time,
+    # compare it against 3 rather than reporting it as the method.
+    max_checks = int(os.getenv("WTB_MAX_CHECKS", "2"))
+    max_coverage_rounds = int(os.getenv("WTB_COVERAGE_ROUNDS", "3"))
 
     # ---------------------------------------------------------------- asking
     def _ask(self, messages, tools=None, temperature=None):

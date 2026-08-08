@@ -110,34 +110,123 @@ benchmark.
 
 ## Running it
 
+First start the model server in its own terminal and leave it running:
+
+```bash
+python3 -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct --port 8000 --dtype auto \
+    --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+`.env` must point at it (`OPENAI_BASE_URL=http://localhost:8000/v1`).
+
+In a second terminal, pick the ten sessions to work on, then run both arms.
 The wrapper is off unless you ask for it, so the same command produces both
 numbers:
 
 ```bash
-# baseline
-python wtb/_llm_response_generation.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_baseline --run-ids
-python wtb/eval_runner.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_baseline --score-dir score_baseline
+python3 method/make_batches.py --batch 1     # writes the ten ids the runner reads
 
-# with the method
-WTB_METHOD=grounded python wtb/_llm_response_generation.py \
-    --model Qwen/Qwen2.5-7B-Instruct --result-dir result_grounded --run-ids
-python wtb/eval_runner.py --model Qwen/Qwen2.5-7B-Instruct \
-    --result-dir result_grounded --score-dir score_grounded
+# baseline arm
+python3 -u -m wtb.openfunctions_evaluation --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_b1_baseline --run-ids
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_b1_baseline --score-dir score_b1_baseline
+
+# method arm -- identical, one environment variable
+WTB_METHOD=grounded python3 -u -m wtb.openfunctions_evaluation \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_b1_grounded --run-ids
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_b1_grounded --score-dir score_b1_grounded
 ```
 
-Working in batches of ten:
+Run the modules with `-m`; running the files directly breaks their imports.
+Use a fresh `--result-dir` per arm per batch, or old results are silently
+reused and the comparison is meaningless.
+
+Batches:
 
 ```bash
-python method/make_batches.py            # once: 40 dev sessions, 4 batches
-python method/make_batches.py --batch 1  # load batch 1, then run with --run-ids
+python3 method/make_batches.py            # once: 40 dev sessions, 4 batches
+python3 method/make_batches.py --batch 2  # move on once batch 1 is understood
 ```
+
+## Running the whole benchmark
+
+Leaving `--run-ids` off runs every session in the file, which is all 256.
+There is nothing else to switch on.
+
+One command does both arms and prints the comparison at the end:
+
+```bash
+bash method/run_full.sh
+```
+
+It checks the server is up and that the method arm really resolves to the
+wrapper before it starts, writes to `result_full_baseline` /
+`result_full_grounded` and `score_full_baseline` / `score_full_grounded`, and
+keeps the logs in `logs_full/`. Useful variants:
+
+```bash
+bash method/run_full.sh --arm grounded    # only the method arm
+bash method/run_full.sh --threads 16      # if the server can take it
+bash method/run_full.sh --tag v2          # keep a second run separate
+bash method/run_full.sh --fresh           # discard old results and start over
+```
+
+The same thing written out by hand, if you would rather see every step:
+
+```bash
+# plain arm
+python3 -u -m wtb.openfunctions_evaluation --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_full_baseline
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_full_baseline --score-dir score_full_baseline
+
+# method arm -- same command, one environment variable
+WTB_METHOD=grounded python3 -u -m wtb.openfunctions_evaluation \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --num-threads 8 --result-dir result_full_grounded
+python3 -u -m wtb.eval_runner --model Qwen_Qwen2.5-7B-Instruct \
+    --result-dir result_full_grounded --score-dir score_full_grounded
+
+python3 method/compare.py score_full_baseline/Qwen_Qwen2.5-7B-Instruct \
+                          score_full_grounded/Qwen_Qwen2.5-7B-Instruct
+```
+
+Two things worth knowing before starting a full run.
+
+**It resumes.** Sessions that already have a result are skipped, so if the run
+dies partway through, re-running the identical command carries on from where it
+stopped. That also means a result directory must never be shared between two
+different arms, or you get a silent mixture of both. Use `--fresh` (or
+`--allow-overwrite` by hand) to start a directory over.
+
+**It costs more than the plain run.** A turn answered in words costs one model
+call and is returned untouched. A turn that needs a call costs about four, and
+a multi-tool turn being repaired can reach eight. Over 256 sessions that is
+roughly five thousand generations against about a thousand for the plain arm.
+If that is too slow, both limits can be turned down from the shell:
+
+```bash
+WTB_MAX_CHECKS=1 WTB_COVERAGE_ROUNDS=1 WTB_METHOD=grounded ...
+```
+
+`WTB_COVERAGE_ROUNDS=1` gives back the single-shot version of rule 3, which is
+the thing rule 3 exists to replace, so compare it against 3 rather than
+reporting it as the method.
+
+**And one thing about the number it gives you.** The first full run is clean:
+nothing has been fitted to those sessions. It stops being clean the moment
+something gets changed in response to what it says and it is run again. If
+that happens, the honest thing is to report the first number, or to go back to
+the dev batches and keep the rest sealed until the method has stopped moving.
 
 Reading the result:
 
 ```bash
-python method/compare.py score_baseline/<model> score_grounded/<model>
+python3 method/compare.py score_b1_baseline/<model> score_b1_grounded/<model>
 ```
 
 `compare.py` reports how many turns were fixed and how many were broken,
