@@ -37,6 +37,7 @@ better. Rules 4-5 are pure bookkeeping and act as a floor.
 import json
 import os
 import re
+import time
 from copy import deepcopy
 
 from wtb.model_handler.api_inference.oai import OpenAIHandler
@@ -190,13 +191,40 @@ class GroundedHandler(OpenAIHandler):
     max_checks = int(os.getenv("WTB_MAX_CHECKS", "2"))
     max_coverage_rounds = int(os.getenv("WTB_COVERAGE_ROUNDS", "3"))
 
+    # Every extra question has a short answer -- one word, a few quoted
+    # phrases, a numbered list -- so none of them needs room to ramble. Without
+    # these caps a check can keep generating until the server's own limit,
+    # which is what makes a handful of turns take minutes instead of seconds.
+    check_tokens = int(os.getenv("WTB_CHECK_TOKENS", "256"))
+    speak_tokens = int(os.getenv("WTB_SPEAK_TOKENS", "512"))
+
+    # A turn is allowed this many seconds of repair work. Past it, whatever the
+    # model first produced is returned untouched, and the turn simply scores as
+    # the baseline would have. Losing a repair is much cheaper than losing the
+    # run.
+    turn_budget_seconds = float(os.getenv("WTB_TURN_BUDGET", "180"))
+
+    # The wrapper's turns are longer than a plain one, so it gets its own,
+    # longer client timeout. The baseline arm is left exactly as it was.
+    request_timeout_seconds = float(os.getenv("WTB_REQUEST_TIMEOUT", "600"))
+
+    def __init__(self, model_name, temperature):
+        super().__init__(model_name, temperature)
+        self.client = self.client.with_options(timeout=self.request_timeout_seconds)
+        self._deadline = None
+
+    def _time_left(self):
+        """Is there still budget for another check on this turn?"""
+        return self._deadline is None or time.time() < self._deadline
+
     # ---------------------------------------------------------------- asking
-    def _ask(self, messages, tools=None, temperature=None):
+    def _ask(self, messages, tools=None, temperature=None, max_tokens=None):
         response, latency = self.generate_with_backoff(
             messages=messages,
             model=self.model_name,
             temperature=self.temperature if temperature is None else temperature,
-            **({"tools": tools} if tools else {})
+            **({"tools": tools} if tools else {}),
+            **({"max_tokens": max_tokens} if max_tokens else {})
         )
         parsed = json.loads(response.json())
         message = parsed["choices"][0]["message"]
@@ -227,7 +255,7 @@ class GroundedHandler(OpenAIHandler):
                 "tool call? Answer with one word, YES or NO."
             ),
         }]
-        content, _, pin, pout, _ = self._ask(probe, temperature=0.0)
+        content, _, pin, pout, _ = self._ask(probe, temperature=0.0, max_tokens=self.check_tokens)
         verdict = (content or "").strip().upper().startswith("YES")
         return verdict, pin, pout
 
@@ -258,7 +286,7 @@ class GroundedHandler(OpenAIHandler):
                 "result). Reply one line per value, in the form `key: quote`."
             ),
         }]
-        content, _, pin, pout, _ = self._ask(probe, temperature=0.0)
+        content, _, pin, pout, _ = self._ask(probe, temperature=0.0, max_tokens=self.check_tokens)
 
         missing = []
         for line in (content or "").splitlines():
@@ -285,7 +313,7 @@ class GroundedHandler(OpenAIHandler):
                 "numbered. Keep each to a few words. Do not call any tool."
             ),
         }]
-        content, _, pin, pout, _ = self._ask(probe, temperature=0.0)
+        content, _, pin, pout, _ = self._ask(probe, temperature=0.0, max_tokens=self.check_tokens)
         items = [
             line.strip()
             for line in (content or "").splitlines()
@@ -308,6 +336,8 @@ class GroundedHandler(OpenAIHandler):
 
         checklist = "\n".join(items)
         for _ in range(self.max_coverage_rounds):
+            if not self._time_left():
+                break
             summary = "\n".join(
                 f"- {c['function']['name']}({c['function']['arguments']})" for c in calls
             )
@@ -321,7 +351,9 @@ class GroundedHandler(OpenAIHandler):
                     "is still missing."
                 ),
             }]
-            content, extra, pin, pout, _ = self._ask(probe, tools=tools, temperature=0.0)
+            content, extra, pin, pout, _ = self._ask(
+                probe, tools=tools, temperature=0.0, max_tokens=self.speak_tokens
+            )
             spent_in, spent_out = spent_in + pin, spent_out + pout
 
             if not extra or (content or "").strip().upper().startswith("DONE"):
@@ -355,16 +387,33 @@ class GroundedHandler(OpenAIHandler):
 
     # ------------------------------------------------------------------ main
     def _request_tool_call(self, inference_data):
+        """Draft first, repair second -- and never let the repair sink the turn.
+
+        Everything after the first call is optional. If a check is slow, fails,
+        or runs past the turn's budget, the model's own draft is handed back
+        unchanged and that turn scores exactly as the baseline would have. A
+        missed repair costs one turn; a crash costs the whole run.
+        """
         messages = inference_data["messages"]
         tools = inference_data["tools"]
 
         content, tool_calls, tin, tout, latency = self._ask(messages, tools=tools)
-        checks = 0
 
         # ---- the model chose to speak. Leave it alone; on answer-the-user
         # ---- turns speaking is right every single time it happens.
         if not tool_calls:
             return _Response(content or "", None, tin, tout), latency
+
+        draft = _Response(content, tool_calls, tin, tout)
+        self._deadline = time.time() + self.turn_budget_seconds
+        try:
+            return self._repair(messages, tools, content, tool_calls, tin, tout, latency)
+        except Exception as exc:  # timeouts, bad JSON, a server hiccup
+            print(f"[grounded] repair skipped, keeping the draft ({type(exc).__name__}: {exc})")
+            return draft, latency
+
+    def _repair(self, messages, tools, content, tool_calls, tin, tout, latency):
+        checks = 0
 
         # ---- rule 4 and 5 first: they are free and cannot make things worse
         kept = []
@@ -392,12 +441,13 @@ class GroundedHandler(OpenAIHandler):
                 deepcopy(messages) + [{
                     "role": "user",
                     "content": "Answer the request using what is already in this conversation. Do not call any tool.",
-                }]
+                }],
+                max_tokens=self.speak_tokens,
             )
             return _Response(spoken or content or "", None, tin + pin, tout + pout), latency
 
         # ---- rule 1: is a call needed at all?
-        if checks < self.max_checks:
+        if checks < self.max_checks and self._time_left():
             answered, pin, pout = self._already_answered(messages)
             tin, tout, checks = tin + pin, tout + pout, checks + 1
             if answered:
@@ -405,12 +455,13 @@ class GroundedHandler(OpenAIHandler):
                     deepcopy(messages) + [{
                         "role": "user",
                         "content": "Answer the request using what is already in this conversation. Do not call any tool.",
-                    }]
+                    }],
+                    max_tokens=self.speak_tokens,
                 )
                 return _Response(spoken or "", None, tin + pin, tout + pout), latency
 
         # ---- rule 2: can every required value be pointed at?
-        if checks < self.max_checks:
+        if checks < self.max_checks and self._time_left():
             first = kept[0]["function"]
             missing, pin, pout = self._unsourced_parameters(
                 messages, tools, first["name"], json.loads(first["arguments"])
@@ -425,13 +476,15 @@ class GroundedHandler(OpenAIHandler):
                             f"The following details are needed but were never given: {pretty}. "
                             "Ask the user for exactly those, in one short sentence. Do not call any tool."
                         ),
-                    }]
+                    }],
+                    max_tokens=self.speak_tokens,
                 )
                 return _Response(spoken or f"Could you tell me the {pretty}?", None,
                                  tin + pin, tout + pout), latency
 
         # ---- rule 3: keep going until nothing the user asked for is left over
-        kept, pin, pout = self._cover(messages, tools, kept)
-        tin, tout = tin + pin, tout + pout
+        if self._time_left():
+            kept, pin, pout = self._cover(messages, tools, kept)
+            tin, tout = tin + pin, tout + pout
 
         return _Response(content, kept, tin, tout), latency

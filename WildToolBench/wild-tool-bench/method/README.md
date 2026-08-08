@@ -217,6 +217,41 @@ WTB_MAX_CHECKS=1 WTB_COVERAGE_ROUNDS=1 WTB_METHOD=grounded ...
 the thing rule 3 exists to replace, so compare it against 3 rather than
 reporting it as the method.
 
+### If turns hang
+
+Every extra question the wrapper asks has a short answer -- one word, a few
+quoted phrases, a numbered list -- so all of them are capped. Without a cap a
+single check can keep generating until the server's own limit, which is what
+turns a handful of sessions into a stall.
+
+Beyond that, repair work is optional by construction. Each turn gets a budget;
+once it is spent, or if a check times out or fails for any other reason, the
+model's own first draft is returned unchanged and that turn scores exactly as
+the baseline would have. A missed repair costs one turn. A crash costs the run.
+The line `[grounded] repair skipped, keeping the draft` in the log is that
+happening, and it is worth counting -- if it appears often, the run is quietly
+turning into the baseline.
+
+The free parts of the method (real parameter names, declared types and order,
+dropping a call whose answer is already in the conversation) cost no model call
+and still apply even when the budget is gone.
+
+| variable | default | what it does |
+|---|---|---|
+| `WTB_CHECK_TOKENS` | 256 | length cap on each check |
+| `WTB_SPEAK_TOKENS` | 512 | length cap on the reply the wrapper asks for |
+| `WTB_TURN_BUDGET` | 180 | seconds of repair allowed per turn |
+| `WTB_REQUEST_TIMEOUT` | 600 | client timeout, method arm only |
+
+Raising the timeout alone is not a fix. If one request genuinely needs ten
+minutes, something is unbounded rather than slow, and the caps and the budget
+are what deal with that. Note also that the run resumes: sessions that timed
+out are the only ones missing, so re-running the same command retries just
+those.
+
+If the same session ids keep failing, it is not a tuning problem -- take the
+ids from the log and look at them directly.
+
 **And one thing about the number it gives you.** The first full run is clean:
 nothing has been fitted to those sessions. It stops being clean the moment
 something gets changed in response to what it says and it is run again. If
