@@ -4,6 +4,7 @@ from .api_inference.oai import OpenAIHandler
 from .api_inference.deepseek import DeepSeekAPIHandler
 from .api_inference.hunyuan import HunYuanAPIHandler
 from .api_inference.grounded import GroundedHandler
+from .api_inference.gavel import GavelHandler
 
 
 api_inference_handler_map = {
@@ -27,9 +28,14 @@ try:
 except ImportError:
     pass
 
-# Set WTB_METHOD=grounded to run the wrapper described in
-# wtb/model_handler/api_inference/grounded.py. Anything else runs the plain
-# baseline, so the same command scores both with one variable changed.
-_DEFAULT = GroundedHandler if os.getenv("WTB_METHOD", "").lower() == "grounded" else OpenAIHandler
+# The method switch is deliberately external to the benchmark input.  It
+# changes the handler, never the system prompt or tool descriptions.
+_METHOD = os.getenv("WTB_METHOD", "").lower()
+if _METHOD == "gavel":
+    _DEFAULT = GavelHandler
+elif _METHOD == "grounded":
+    _DEFAULT = GroundedHandler
+else:
+    _DEFAULT = OpenAIHandler
 
 HANDLER_MAP = defaultdict(lambda: _DEFAULT, api_inference_handler_map if _DEFAULT is OpenAIHandler else {})

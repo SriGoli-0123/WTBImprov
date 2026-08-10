@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Run the whole benchmark -- all 256 sessions -- twice: once without the
-# wrapper and once with it, then compare the two turn by turn.
+# Run the whole benchmark -- all 256 sessions -- twice: once without GAVEL
+# and once with it, then compare the two turn by turn.
 #
 #   bash method/run_full.sh                       # both arms, default model
-#   bash method/run_full.sh --arm grounded        # just the method arm
+#   bash method/run_full.sh --arm gavel           # just the method arm
 #   bash method/run_full.sh --arm baseline        # just the plain arm
+#   bash method/run_full.sh --arm grounded        # legacy grounded wrapper
 #   bash method/run_full.sh --tag v2              # keep it separate from an earlier run
 #
 # Safe to re-run. Sessions that already have a result are skipped, so if the
@@ -54,11 +55,11 @@ python3 -c "
 from wtb.model_handler.handler_map import HANDLER_MAP as H
 print('  baseline ->', H['${MODEL}'].__name__)
 "
-WTB_METHOD=grounded python3 -c "
+WTB_METHOD=gavel python3 -c "
 from wtb.model_handler.handler_map import HANDLER_MAP as H
 name = H['${MODEL}'].__name__
-print('  grounded ->', name)
-raise SystemExit(0 if name == 'GroundedHandler' else 'the method arm is not wired up -- stopping')
+print('  gavel    ->', name)
+raise SystemExit(0 if name == 'GavelHandler' else 'the GAVEL arm is not wired up -- stopping')
 "
 
 # ------------------------------------------------------------------- arms
@@ -90,7 +91,10 @@ run_arm () {
 if [[ "$ARM" == "both" || "$ARM" == "baseline" ]]; then
     run_arm baseline ""
 fi
-if [[ "$ARM" == "both" || "$ARM" == "grounded" ]]; then
+if [[ "$ARM" == "both" || "$ARM" == "gavel" ]]; then
+    run_arm gavel "WTB_METHOD=gavel"
+fi
+if [[ "$ARM" == "grounded" ]]; then
     run_arm grounded "WTB_METHOD=grounded"
 fi
 
@@ -100,7 +104,7 @@ if [[ "$ARM" == "both" ]]; then
     echo "=== fixed / broke, turn by turn ==="
     python3 method/compare.py \
         "score_${TAG}_baseline/${MODEL_DIR}" \
-        "score_${TAG}_grounded/${MODEL_DIR}" | tee "${LOGS}/compare.txt"
+        "score_${TAG}_gavel/${MODEL_DIR}" | tee "${LOGS}/compare.txt"
 fi
 
 echo
