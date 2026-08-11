@@ -1,11 +1,10 @@
 # Legacy Grounded experiment
 
-> **Current method:** CONCORD supersedes both this wrapper and GAVEL-v2. See
-> [`method/CONCORD.md`](CONCORD.md) for the evaluator-free,
-> no-added-instructions mechanism, validation evidence, and direct run
-> commands. GAVEL-v2 remains documented in [`method/GAVEL.md`](GAVEL.md) as an
-> ablation. This file is retained so the previous Grounded result remains
-> reproducible.
+> **Current method:** PRISM supersedes CONCORD, GAVEL-v2, and this wrapper. See
+> [`method/PRISM.md`](PRISM.md) for the evaluator-free mechanism that resets
+> policy inertia using only exact messages already present in the model input.
+> CONCORD and GAVEL-v2 remain documented as ablations. This file is retained so
+> the previous Grounded result remains reproducible.
 
 # Deciding whether to act, before deciding how to act
 

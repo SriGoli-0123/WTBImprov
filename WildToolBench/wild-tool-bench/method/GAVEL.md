@@ -1,9 +1,8 @@
 # GAVEL-v2: anchor sovereignty
 
-> **Superseded experiment:** GAVEL-v2 is retained as an ablation. The current
-> method is [CONCORD](CONCORD.md), which corrects GAVEL's excessive
-> clarification behavior while preserving its evaluator firewall and anchor
-> protection.
+> **Superseded experiment:** GAVEL-v2 is retained as an ablation. CONCORD was
+> evaluated after it, and the current experiment is [PRISM](PRISM.md), which
+> targets the paper's self-conditioning diagnosis using exact evidence views.
 
 GAVEL stands for **Guarded, Axiomatic Verification and Execution
 Lexicography**.  V2 is the evidence-driven correction to the first GAVEL run.

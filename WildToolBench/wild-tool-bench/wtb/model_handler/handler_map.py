@@ -6,6 +6,7 @@ from .api_inference.hunyuan import HunYuanAPIHandler
 from .api_inference.grounded import GroundedHandler
 from .api_inference.gavel import GavelHandler
 from .api_inference.concord import ConcordHandler
+from .api_inference.prism import PrismHandler
 
 
 api_inference_handler_map = {
@@ -32,7 +33,9 @@ except ImportError:
 # The method switch is deliberately external to the benchmark input.  It
 # changes the handler, never the system prompt or tool descriptions.
 _METHOD = os.getenv("WTB_METHOD", "").lower()
-if _METHOD == "concord":
+if _METHOD == "prism":
+    _DEFAULT = PrismHandler
+elif _METHOD == "concord":
     _DEFAULT = ConcordHandler
 elif _METHOD == "gavel":
     _DEFAULT = GavelHandler

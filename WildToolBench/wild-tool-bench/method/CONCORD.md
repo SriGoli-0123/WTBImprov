@@ -1,6 +1,10 @@
 # CONCORD: conservative contract-dominance
 
-CONCORD is the current `demo2` method. It keeps the useful mechanical parts
+> **Superseded experiment:** the official CONCORD-v1 result was 375/1024 tasks
+> and 6/256 sessions, below IGAR-v24's 404/1024 and 12/256. It is retained as an
+> ablation. The current experiment is [PRISM](PRISM.md).
+
+CONCORD was the previous `demo2` method. It keeps the useful mechanical parts
 of IGAR-v24 and the anchor protection of GAVEL-v2, but moves all state and
 decision logic outside the model prompt.
 
@@ -19,7 +23,7 @@ The strongest official Qwen2.5-7B result committed so far is IGAR-v24:
 
 The previously documented 17-session number was a saved-trace
 counterfactual, not a fresh inference result. It is not an official benchmark
-claim. CONCORD also has no fresh score yet; run it into a new result directory.
+claim. The official CONCORD-v1 score is 375 tasks and 6 sessions.
 
 The IGAR-v24 layer-3 count of 75 means 75 fourth turns were correct. It does
 not mean 75 sessions failed only at turn 3. Its exact survival chain is:
