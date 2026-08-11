@@ -5,6 +5,7 @@ from .api_inference.deepseek import DeepSeekAPIHandler
 from .api_inference.hunyuan import HunYuanAPIHandler
 from .api_inference.grounded import GroundedHandler
 from .api_inference.gavel import GavelHandler
+from .api_inference.concord import ConcordHandler
 
 
 api_inference_handler_map = {
@@ -31,7 +32,9 @@ except ImportError:
 # The method switch is deliberately external to the benchmark input.  It
 # changes the handler, never the system prompt or tool descriptions.
 _METHOD = os.getenv("WTB_METHOD", "").lower()
-if _METHOD == "gavel":
+if _METHOD == "concord":
+    _DEFAULT = ConcordHandler
+elif _METHOD == "gavel":
     _DEFAULT = GavelHandler
 elif _METHOD == "grounded":
     _DEFAULT = GroundedHandler

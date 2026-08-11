@@ -1,9 +1,11 @@
 # Legacy Grounded experiment
 
-> **Current method:** GAVEL-v2 supersedes this wrapper. See
-> [`method/GAVEL.md`](GAVEL.md) for the evaluator-free, no-added-instructions
-> implementation and direct run commands. This file is retained so the
-> previous full result remains reproducible.
+> **Current method:** CONCORD supersedes both this wrapper and GAVEL-v2. See
+> [`method/CONCORD.md`](CONCORD.md) for the evaluator-free,
+> no-added-instructions mechanism, validation evidence, and direct run
+> commands. GAVEL-v2 remains documented in [`method/GAVEL.md`](GAVEL.md) as an
+> ablation. This file is retained so the previous Grounded result remains
+> reproducible.
 
 # Deciding whether to act, before deciding how to act
 

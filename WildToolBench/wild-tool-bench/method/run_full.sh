@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Run the whole benchmark -- all 256 sessions -- twice: once without GAVEL
+# Run the whole benchmark -- all 256 sessions -- twice: once without CONCORD
 # and once with it, then compare the two turn by turn.
 #
 #   bash method/run_full.sh                       # both arms, default model
-#   bash method/run_full.sh --arm gavel           # just the method arm
+#   bash method/run_full.sh --arm concord         # just the current method arm
+#   bash method/run_full.sh --arm gavel           # retained GAVEL-v2 ablation
 #   bash method/run_full.sh --arm baseline        # just the plain arm
 #   bash method/run_full.sh --arm grounded        # legacy grounded wrapper
 #   bash method/run_full.sh --tag v2              # keep it separate from an earlier run
@@ -55,11 +56,11 @@ python3 -c "
 from wtb.model_handler.handler_map import HANDLER_MAP as H
 print('  baseline ->', H['${MODEL}'].__name__)
 "
-WTB_METHOD=gavel python3 -c "
+WTB_METHOD=concord python3 -c "
 from wtb.model_handler.handler_map import HANDLER_MAP as H
 name = H['${MODEL}'].__name__
-print('  gavel    ->', name)
-raise SystemExit(0 if name == 'GavelHandler' else 'the GAVEL arm is not wired up -- stopping')
+print('  concord  ->', name)
+raise SystemExit(0 if name == 'ConcordHandler' else 'the CONCORD arm is not wired up -- stopping')
 "
 
 # ------------------------------------------------------------------- arms
@@ -91,7 +92,10 @@ run_arm () {
 if [[ "$ARM" == "both" || "$ARM" == "baseline" ]]; then
     run_arm baseline ""
 fi
-if [[ "$ARM" == "both" || "$ARM" == "gavel" ]]; then
+if [[ "$ARM" == "both" || "$ARM" == "concord" ]]; then
+    run_arm concord "WTB_METHOD=concord"
+fi
+if [[ "$ARM" == "gavel" ]]; then
     run_arm gavel "WTB_METHOD=gavel"
 fi
 if [[ "$ARM" == "grounded" ]]; then
@@ -104,7 +108,7 @@ if [[ "$ARM" == "both" ]]; then
     echo "=== fixed / broke, turn by turn ==="
     python3 method/compare.py \
         "score_${TAG}_baseline/${MODEL_DIR}" \
-        "score_${TAG}_gavel/${MODEL_DIR}" | tee "${LOGS}/compare.txt"
+        "score_${TAG}_concord/${MODEL_DIR}" | tee "${LOGS}/compare.txt"
 fi
 
 echo
