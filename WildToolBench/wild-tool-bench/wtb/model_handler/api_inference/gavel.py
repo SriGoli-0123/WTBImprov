@@ -5,24 +5,29 @@ benchmark answer graph, labels, task types, or evaluator output.  The only
 inputs used here are the same ``messages`` and ``tools`` already supplied to
 the stock handler.
 
-The model's first response is the *anchor*.  Additional responses, when used,
-are proposals generated from the exact same messages and tool definitions.
+The model's first response is the *anchor*.  GAVEL-v2 gives that response
+ownership: meaningful text is final, and a mechanically valid tool bundle is
+final.  Additional responses are generated only to rescue a tool anchor with
+a provable defect, using the exact same messages and tool definitions.
 Proposals do not win by vote count: after canonical deduplication they must
-carry receipts for their intent, arguments, guard, dependencies, authorization
-and freshness.  The admissible frontier is selected lexicographically:
+carry receipts for intent, arguments, guards, authorization and freshness.
+The rescue frontier is selected lexicographically:
 
     1. cover the most current user obligations;
     2. make the least irreversible commitment;
-    3. preserve the anchor where the first two are equal;
-    4. make the fewest calls.
+    3. make the fewest calls;
+    4. use a deterministic canonical tie-break.
 
 When no call is ready but a relevant plan lacks required information, GAVEL
 asks the minimum-information clarification that unlocks the most obligations.
-No corrective user or system message is appended at any point.
+Documented defaults are elided unless explicitly requested, and an unresolved
+"one of them" selector cannot authorize a state change.  No corrective user
+or system message is appended at any point.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -92,10 +97,11 @@ class Proposal:
     hard_reasons: tuple[str, ...] = ()
     source: str = "anchor"
     parameter_descriptions: dict[str, str] = field(default_factory=dict)
+    elided_optional: tuple[str, ...] = ()
 
     @property
     def admissible(self):
-        return not self.hard_reasons and not self.missing and (
+        return not self.hard_reasons and not self.missing and not self.unsupported and (
             self.anchor or self.strict_receipts
         )
 
@@ -115,6 +121,10 @@ _REFRESH_RE = re.compile(
 )
 _CLEAR_CHAT_RE = re.compile(
     r"\b(?:fact|explain|explanation|meaning|opinion|think|why|suggestion|advice|use)\b",
+    re.I,
+)
+_AMBIGUOUS_SELECTOR_RE = re.compile(
+    r"\b(?:one of (?:them|these|those)|which one|any one of (?:them|these|those))\b",
     re.I,
 )
 
@@ -309,6 +319,97 @@ def _sanitize(arguments: dict, schema: dict) -> tuple[dict, list[str]]:
         cleaned[key] = value
     ordered = {key: cleaned[key] for key in props if key in cleaned}
     return ordered, errors
+
+
+_NO_DEFAULT = object()
+
+
+def _documented_default(prop: dict) -> Any:
+    """Read a machine or prose-declared default without consulting a model.
+
+    Wild APIs commonly describe defaults only in parameter prose.  Emitting
+    such a value is semantically redundant and, more importantly, turns an
+    omitted user choice into an assertion by the assistant.
+    """
+    if "default" in prop:
+        return prop["default"]
+    description = str(prop.get("description", ""))
+    match = re.search(
+        r"\bdefault(?:\s+value)?\s+(?:is|is set to|being)\s+(.+?)(?:\.(?:\s|$)|$)",
+        description,
+        re.I,
+    )
+    if not match:
+        return _NO_DEFAULT
+    raw = match.group(1).strip().rstrip(",")
+    if raw.lower() in {"empty", "empty list", "an empty list"}:
+        return []
+    if raw.lower() in {"true", "false"}:
+        return raw.lower() == "true"
+    try:
+        return ast.literal_eval(raw)
+    except (SyntaxError, ValueError):
+        try:
+            return float(raw) if "." in raw else int(raw)
+        except ValueError:
+            return _NO_DEFAULT
+
+
+def _optional_explicit(key: str, value: Any, current: str) -> bool:
+    """Whether the current user explicitly fixed an optional choice."""
+    leaves = list(_leaf_values(value))
+    if leaves and all(_contains_value(current, leaf) for leaf in leaves):
+        return True
+    key_words = set(_split_name(key)) - _STOP
+    if not key_words or not (key_words & _tokens(current)):
+        return False
+    if isinstance(value, bool):
+        return bool(re.search(r"\b(?:include|exclude|enable|disable|with|without|yes|no|not)\b", current, re.I))
+    return bool(leaves) and all(_contains_value(current, leaf) for leaf in leaves)
+
+
+def _minimize_optional_arguments(
+    arguments: dict,
+    schema: dict,
+    current: str,
+    messages: list[dict],
+) -> tuple[dict, list[str]]:
+    """Elide only optional commitments proven redundant.
+
+    This is intentionally narrower than deleting every optional field.  A
+    saved-trace ablation showed that blanket deletion damages legitimate date,
+    format, unit, and filtering requests.  GAVEL-v2 removes a documented
+    default when the user did not explicitly choose it, plus stale optional
+    decoration on a genuinely new/another-object request.
+    """
+    required = set(schema.get("required", []) or [])
+    props = schema.get("properties", {}) or {}
+    # The active request can contain the original "another" turn plus a short
+    # answer to a clarification.  Optional decoration from the old object is
+    # still revoked even after the new required value has been supplied.
+    novelty = bool(_NOVELTY_RE.search(current))
+    kept = {}
+    elided = []
+    for key, value in arguments.items():
+        if key in required:
+            kept[key] = value
+            continue
+        prop = props.get(key, {})
+        explicit = _optional_explicit(key, value, current)
+        default = _documented_default(prop)
+        is_default = default is not _NO_DEFAULT and value == default
+        # Positive capabilities (for example includeImage=true) and wire
+        # formats can be implicit in the requested outcome even when the user
+        # does not repeat the schema's exact noun.  Preserve them.  This narrow
+        # exception was required by the clean-baseline non-regression audit.
+        implicit_semantics = value is True or "format" in key.lower()
+        if (is_default and not explicit and not implicit_semantics) or (
+            novelty and not explicit and not implicit_semantics
+        ):
+            elided.append(key)
+            continue
+        kept[key] = value
+    return kept, elided
 
 
 def _canonical(name: str, arguments: dict) -> str:
@@ -590,11 +691,14 @@ def evaluate_call(
     schema = _schema(tool)
     arguments, shape_errors = _sanitize(arguments, schema)
     hard.extend(shape_errors)
+    current, live_tool, history = _evidence(messages)
+    arguments, elided_optional = _minimize_optional_arguments(
+        arguments, schema, current, messages
+    )
     required = list(schema.get("required", []) or [])
     missing = [key for key in required if key not in arguments]
     props = schema.get("properties", {}) or {}
 
-    current, live_tool, history = _evidence(messages)
     clauses = _split_clauses(current)
     clause, strong_intent = _best_clause(
         name, tool.get("description", ""), arguments, clauses, history
@@ -609,6 +713,18 @@ def evaluate_call(
             hard.append("missing_intent_receipt")
     if risk >= 2 and not _guard_ready(current, live_tool, risk):
         hard.append("unresolved_guard")
+    if risk >= 2 and _AMBIGUOUS_SELECTOR_RE.search(current):
+        identifying = [
+            key for key in required
+            if key.lower() == "id" or key.lower().endswith("_id")
+            or key.lower() in {"name", "username", "email", "account"}
+        ]
+        has_current_selector = any(
+            key in arguments and _contains_value(current, arguments[key])
+            for key in identifying
+        )
+        if not has_current_selector:
+            hard.append("ambiguous_selector")
 
     novelty = _underspecified_novelty(messages)
     unsupported = []
@@ -668,6 +784,7 @@ def evaluate_call(
         hard_reasons=tuple(dict.fromkeys(hard)),
         source=source,
         parameter_descriptions=descriptions,
+        elided_optional=tuple(elided_optional),
     )
 
 
@@ -698,6 +815,10 @@ def _compatible(subset: list[Proposal], clauses: list[str]) -> bool:
 
 def select_frontier(proposals: list[Proposal], current_text: str) -> list[Proposal]:
     """Exact GAVEL allocation over the usually tiny proposal market."""
+    endowed = preserve_anchor_bundle(proposals)
+    if endowed is not None:
+        return endowed
+
     # Proposal multiplicity carries no weight.  Prefer the anchor copy of an
     # identical call so correlated samples cannot outvote it.
     unique: dict[str, Proposal] = {}
@@ -721,15 +842,6 @@ def select_frontier(proposals: list[Proposal], current_text: str) -> list[Propos
                 continue
             candidate_sets.append(chosen)
 
-    # The original response is a bundle, not a bag of independently ranked
-    # calls.  Admit the whole viable bundle as one allocation even when the
-    # shallow clause parser under-counts its obligations.  This preserves
-    # correct parallel calls while still allowing an equally complete,
-    # lower-risk certified alternative to beat the anchor.
-    endowed = preserve_and_augment_anchor(proposals, current_text)
-    if endowed is not None:
-        candidate_sets.append(endowed)
-
     seen_sets = set()
     for chosen in candidate_sets:
         signature = tuple(sorted(p.canonical for p in chosen))
@@ -747,47 +859,24 @@ def select_frontier(proposals: list[Proposal], current_text: str) -> list[Propos
 
 
 _ANCHOR_VETO_REASONS = {
-    "already_completed", "arguments_not_object", "invalid_json",
+    "already_completed", "ambiguous_selector", "arguments_not_object", "invalid_json",
     "missing_intent_receipt", "unknown_tool", "unresolved_guard",
 }
 
 
-def preserve_and_augment_anchor(proposals: list[Proposal], current_text: str) -> list[Proposal] | None:
-    """Keep a mechanically viable anchor bundle intact, then add only proof.
+def preserve_anchor_bundle(proposals: list[Proposal]) -> list[Proposal] | None:
+    """Return a mechanically viable anchor bundle unchanged and indivisible.
 
-    Parallel calls are an indivisible part of the model's original decision.
-    Re-ranking individual anchor calls caused exactly the kind of regression
-    GAVEL is meant to prevent.  Extra sampled calls may extend the bundle, but
-    only with strict receipts and only where the request explicitly has room
-    for another action.
+    V2 gives the original model response an endowment: a sampled alternative
+    cannot replace or extend a valid decision.  Alternatives exist only to
+    rescue a bundle with a mechanically provable defect.
     """
     anchors = [p for p in proposals if p.anchor]
     if not anchors:
         return None
-    if any(p.missing or set(p.hard_reasons) & _ANCHOR_VETO_REASONS for p in anchors):
+    if any(not p.admissible for p in anchors):
         return None
-
-    chosen = list(anchors)
-    seen = {p.canonical for p in chosen}
-    clauses = _split_clauses(current_text)
-    extras = sorted(
-        (p for p in proposals if not p.anchor and p.strict_receipts),
-        key=lambda p: (p.risk, p.clause, p.canonical),
-    )
-    for proposal in extras:
-        if proposal.canonical in seen:
-            continue
-        existing = [p for p in chosen if p.clause == proposal.clause]
-        cap = _explicit_capacity(
-            clauses[proposal.clause] if proposal.clause < len(clauses) else ""
-        )
-        if len(existing) >= cap:
-            continue
-        if proposal.entity in {p.entity for p in existing}:
-            continue
-        chosen.append(proposal)
-        seen.add(proposal.canonical)
-    return sorted(chosen, key=lambda p: (p.name, p.canonical))
+    return sorted(anchors, key=lambda p: (p.name, p.canonical))
 
 
 def _information_cost(field_name: str) -> int:
@@ -841,33 +930,12 @@ def _clarifying_text(fields: list[str], plan: Proposal | None) -> str:
     return "Could you provide " + ", ".join(labels[:-1]) + f", and {labels[-1]}?"
 
 
-def _explicit_execution_intent(proposal: Proposal, current_text: str, tools: list[dict]) -> bool:
-    """High bar for changing a plain-text anchor into a tool interaction.
-
-    Generic questions such as "what do you think?" can lexically resemble a
-    read tool.  They are not sufficient reason to overturn a text response.
-    A non-read action must carry its own explicit authorization receipt; a
-    read action needs an operational retrieval verb, or a terse entity-valued
-    continuation of the same operation.
-    """
-    tool = _tool_map(tools).get(proposal.name, {})
-    action = _action_class(proposal.name, tool.get("description", ""))
-    words = _tokens(current_text)
-    if action != "read":
-        return bool(words & _ACTION_SYNONYMS.get(action, {action}))
-    operational = _ACTION_SYNONYMS["read"] - {"know", "tell", "what", "which"}
-    if words & operational:
-        return True
-    return any(_contains_value(current_text, x) for x in _leaf_values(proposal.arguments)) and len(words) <= 8
-
-
 class GavelHandler(OpenAIHandler):
     """Inference-only, evaluator-free successor to IGAR-v24."""
 
     request_timeout_seconds = float(os.getenv("WTB_GAVEL_REQUEST_TIMEOUT", "600"))
     total_candidates = max(1, int(os.getenv("WTB_GAVEL_CANDIDATES", "2")))
     proposal_temperature = float(os.getenv("WTB_GAVEL_TEMPERATURE", "0.2"))
-    explore_text_anchors = os.getenv("WTB_GAVEL_EXPLORE_TEXT", "1") == "1"
 
     def __init__(self, model_name, temperature):
         super().__init__(model_name, temperature)
@@ -928,6 +996,7 @@ class GavelHandler(OpenAIHandler):
                 "strict": p.strict_receipts,
                 "missing": list(p.missing),
                 "unsupported": list(p.unsupported),
+                "elided_optional": list(p.elided_optional),
                 "rejected": list(p.hard_reasons),
             } for p in proposals],
         }
@@ -946,47 +1015,14 @@ class GavelHandler(OpenAIHandler):
         generations.append(anchor)
         current, _, _ = _evidence(messages)
 
-        # Plain-text anchors are preserved unless a forced-tool proposal has
-        # complete strict receipts.  This is the non-regression default.
-        if not anchor.tool_calls:
-            proposals = []
-            if self.explore_text_anchors:
-                try:
-                    forced = self._generate(
-                        messages, tools, temperature=self.proposal_temperature,
-                        tool_choice="required",
-                    )
-                    generations.append(forced)
-                    proposals.extend(
-                        evaluate_call(c, tools, messages, anchor=False, source="forced_tool")
-                        for c in forced.tool_calls
-                    )
-                except Exception as exc:
-                    print(f"[GAVEL] forced-tool branch unavailable: {type(exc).__name__}: {exc}", flush=True)
-            selected = select_frontier(proposals, current)
-            selected = [
-                p for p in selected
-                if p.strict_receipts and _explicit_execution_intent(p, current, tools)
-            ]
-            if selected:
-                pin, pout, latency = self._sum_usage(generations)
-                self._audit(inference_data, anchor, proposals, selected, "tool_over_text")
-                return _Response(anchor.content, [p.call for p in selected], pin, pout), latency
-
-            clarification_plans = [
-                p for p in proposals if _explicit_execution_intent(p, current, tools)
-            ]
-            fields, plan = minimum_information_clarification(clarification_plans)
-            if fields and (not anchor.content or "?" not in anchor.content):
-                pin, pout, latency = self._sum_usage(generations)
-                self._audit(
-                    inference_data, anchor, proposals, [], "clarify_over_text",
-                    {"fields": fields},
-                )
-                return _Response(_clarifying_text(fields, plan), None, pin, pout), latency
-
+        # Text sovereignty: a meaningful stock text response is a completed
+        # model decision, not an invitation to manufacture a tool call.  V1's
+        # forced-tool branch changed 274 such outputs and none scored correct.
+        # Returning here also avoids vLLM's oversized tool_choice="required"
+        # structured-output schema path.
+        if not anchor.tool_calls and str(anchor.content or "").strip():
             pin, pout, latency = self._sum_usage(generations)
-            self._audit(inference_data, anchor, proposals, [], "keep_text_anchor")
+            self._audit(inference_data, anchor, [], [], "text_sovereignty")
             return _Response(anchor.content, None, pin, pout, anchor.reasoning_content), latency
 
         proposals = [
@@ -994,8 +1030,23 @@ class GavelHandler(OpenAIHandler):
             for c in anchor.tool_calls
         ]
 
-        # Extra proposals see the identical prompt.  Their multiplicity is
-        # discarded, so correlated sampling cannot turn repetition into proof.
+        # Tool-anchor ownership: do not sample, re-rank, split, or extend a
+        # mechanically viable original bundle.  Documented-default elision is
+        # the only permitted semantics-preserving normalization.
+        endowed = preserve_anchor_bundle(proposals)
+        if endowed is not None:
+            pin, pout, latency = self._sum_usage(generations)
+            self._audit(inference_data, anchor, proposals, endowed, "preserve_tool_anchor")
+            return _Response(
+                anchor.content,
+                [p.call for p in endowed],
+                pin,
+                pout,
+                anchor.reasoning_content,
+            ), latency
+
+        # Only a provably defective tool anchor opens the rescue market.  Extra
+        # proposals see the identical prompt, and multiplicity has no weight.
         for index in range(1, self.total_candidates):
             try:
                 extra = self._generate(

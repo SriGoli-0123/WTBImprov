@@ -15,7 +15,7 @@ from wtb.model_handler.api_inference.gavel import (
     _completed_calls,
     evaluate_call,
     minimum_information_clarification,
-    preserve_and_augment_anchor,
+    preserve_anchor_bundle,
     select_frontier,
 )
 
@@ -139,6 +139,94 @@ class GavelCertificateTests(unittest.TestCase):
         )
         self.assertIn("unresolved_guard", proposal.hard_reasons)
 
+    def test_documented_default_is_elided_when_not_requested(self):
+        tools = [tool(
+            "retrieveArtistInfo", "Retrieve an artist.",
+            {
+                "artist_id": {"type": "string"},
+                "include_aliases": {
+                    "type": "boolean",
+                    "description": "Whether to include aliases. The default value is false.",
+                },
+            },
+            ["artist_id"],
+        )]
+        proposal = evaluate_call(
+            call("retrieveArtistInfo", {"artist_id": "12345", "include_aliases": False}),
+            tools, messages("Look up artist 12345."), anchor=True, source="anchor",
+        )
+        self.assertEqual(proposal.arguments, {"artist_id": "12345"})
+        self.assertEqual(proposal.elided_optional, ("include_aliases",))
+
+    def test_explicit_optional_choice_is_preserved(self):
+        tools = [tool(
+            "getSongMP3", "Get an MP3 link.",
+            {
+                "song": {"type": "string"},
+                "quality": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Audio quality. The default value is 'high'.",
+                },
+            },
+            ["song"],
+        )]
+        proposal = evaluate_call(
+            call("getSongMP3", {"song": "Love Story", "quality": "high"}),
+            tools, messages("Get the high quality MP3 for Love Story."),
+            anchor=True, source="anchor",
+        )
+        self.assertEqual(proposal.arguments["quality"], "high")
+        self.assertEqual(proposal.elided_optional, ())
+
+    def test_new_object_drops_old_optional_decoration_after_clarification(self):
+        tools = [tool(
+            "addQuote", "Add a quote.",
+            {
+                "author": {"type": "string"},
+                "text": {"type": "string"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for the quote; default is empty.",
+                },
+            },
+            ["author", "text"],
+        )]
+        history = [
+            {"role": "user", "content": "Add another one for me."},
+            {"role": "assistant", "content": "What should the quote say?"},
+        ]
+        proposal = evaluate_call(
+            call("addQuote", {
+                "author": "Linus Torvalds",
+                "text": "Avoiding complexity reduces bugs.",
+                "tags": ["Simplicity", "Bugs"],
+            }),
+            tools,
+            messages("Avoiding complexity reduces bugs.", history),
+            anchor=True,
+            source="anchor",
+        )
+        self.assertNotIn("tags", proposal.arguments)
+        self.assertEqual(proposal.elided_optional, ("tags",))
+
+    def test_ambiguous_selector_cannot_authorize_update(self):
+        tools = [tool(
+            "updateMod", "Update a mod.",
+            {
+                "mod_id": {"type": "integer"},
+                "status": {"type": "string"},
+            },
+            ["mod_id", "status"],
+        )]
+        proposal = evaluate_call(
+            call("updateMod", {"mod_id": 67890, "status": "inactive"}),
+            tools, messages("Update one of them to inactive."),
+            anchor=True, source="anchor",
+        )
+        self.assertIn("ambiguous_selector", proposal.hard_reasons)
+
 
 class GavelMechanismTests(unittest.TestCase):
     @staticmethod
@@ -149,24 +237,28 @@ class GavelMechanismTests(unittest.TestCase):
             strong_intent=True, strict_receipts=not missing, missing=tuple(missing),
         )
 
-    def test_lower_risk_beats_anchor_after_equal_coverage(self):
+    def test_lower_risk_does_not_replace_valid_anchor(self):
         risky_anchor = self.proposal("purchaseNow", anchor=True, risk=3)
         safe_alternative = self.proposal("inspectFirst", anchor=False, risk=0)
         chosen = select_frontier([risky_anchor, safe_alternative], "check this")
-        self.assertEqual([p.name for p in chosen], ["inspectFirst"])
+        self.assertEqual([p.name for p in chosen], ["purchaseNow"])
 
-    def test_coverage_precedes_anchor_retention(self):
+    def test_sample_cannot_extend_valid_anchor(self):
         anchor = self.proposal("one", anchor=True, risk=0, clause=0, entity="a")
         other = self.proposal("two", anchor=False, risk=0, clause=1, entity="b")
         chosen = select_frontier([anchor, other], "check one. check two")
-        self.assertEqual({p.name for p in chosen}, {"one", "two"})
+        self.assertEqual([p.name for p in chosen], ["one"])
+
+    def test_invalid_anchor_can_be_rescued(self):
+        anchor = self.proposal("broken", anchor=True, risk=0, missing=("city",))
+        replacement = self.proposal("working", anchor=False, risk=0)
+        chosen = select_frontier([anchor, replacement], "check the weather")
+        self.assertEqual([p.name for p in chosen], ["working"])
 
     def test_viable_parallel_anchor_is_indivisible(self):
         first = self.proposal("first", anchor=True, risk=0, entity="a")
         second = self.proposal("second", anchor=True, risk=0, entity="b")
-        chosen = preserve_and_augment_anchor(
-            [first, second], "retrieve the requested information"
-        )
+        chosen = preserve_anchor_bundle([first, second])
         self.assertEqual({p.name for p in chosen}, {"first", "second"})
 
     def test_minimum_information_uses_cost_not_field_count(self):
@@ -205,28 +297,42 @@ class _RecordingHandler(GavelHandler):
 
 
 class GavelBoundaryTests(unittest.TestCase):
-    def test_auxiliary_generation_does_not_append_instructions(self):
+    def test_text_sovereignty_uses_exactly_one_request(self):
         original_messages = messages("What do you think about random strings?")
         original_tools = [tool("generateRandomString", "Generate a random string.")]
         handler = _RecordingHandler([
             _FakeAPIResponse("They are useful for identifiers."),
-            _FakeAPIResponse(None, [call("generateRandomString", {})]),
         ])
-        old = GavelHandler.explore_text_anchors
-        GavelHandler.explore_text_anchors = True
-        try:
-            handler._request_tool_call({
-                "messages": deepcopy(original_messages),
-                "tools": deepcopy(original_tools),
-                "answer_list": [{"this": "must never be read"}],
-            })
-        finally:
-            GavelHandler.explore_text_anchors = old
-        self.assertEqual(len(handler.seen), 2)
+        response, _ = handler._request_tool_call({
+            "messages": deepcopy(original_messages),
+            "tools": deepcopy(original_tools),
+            "answer_list": [{"this": "must never be read"}],
+        })
+        self.assertEqual(len(handler.seen), 1)
         for request in handler.seen:
             self.assertEqual(request["messages"], original_messages)
             self.assertEqual(request["tools"], original_tools)
+            self.assertNotIn("tool_choice", request)
         self.assertNotIn("answer_list", json.dumps(handler.seen))
+        output = json.loads(response.json())["choices"][0]["message"]
+        self.assertIsNone(output["tool_calls"])
+
+    def test_text_anchor_survives_explicit_tool_wording(self):
+        tools = [tool(
+            "getWeather", "Get weather for a city.",
+            {"city": {"type": "string"}}, ["city"],
+        )]
+        handler = _RecordingHandler([
+            _FakeAPIResponse("Chicago will be sunny."),
+        ])
+        response, _ = handler._request_tool_call({
+            "messages": messages("Check the weather in Chicago."),
+            "tools": tools,
+        })
+        output = json.loads(response.json())["choices"][0]["message"]
+        self.assertEqual(len(handler.seen), 1)
+        self.assertIsNone(output["tool_calls"])
+        self.assertEqual(output["content"], "Chicago will be sunny.")
 
     def test_clear_chat_request_replaces_topic_triggered_action(self):
         tools = [tool(
@@ -263,6 +369,30 @@ class GavelBoundaryTests(unittest.TestCase):
         })
         output = json.loads(response.json())["choices"][0]["message"]
         self.assertEqual(len(output["tool_calls"]), 2)
+        self.assertEqual(len(handler.seen), 1)
+
+    def test_invalid_tool_anchor_opens_exact_input_rescue(self):
+        original_messages = messages("Check the weather in Chicago.")
+        original_tools = [tool(
+            "getWeather", "Get weather for a city.",
+            {"city": {"type": "string"}}, ["city"],
+        )]
+        handler = _RecordingHandler([
+            _FakeAPIResponse(None, [call("unknownWeather", {"city": "Chicago"})]),
+            _FakeAPIResponse(None, [call("getWeather", {"city": "Chicago"})]),
+        ])
+        handler.total_candidates = 2
+        response, _ = handler._request_tool_call({
+            "messages": deepcopy(original_messages),
+            "tools": deepcopy(original_tools),
+        })
+        output = json.loads(response.json())["choices"][0]["message"]
+        self.assertEqual(len(handler.seen), 2)
+        for request in handler.seen:
+            self.assertEqual(request["messages"], original_messages)
+            self.assertEqual(request["tools"], original_tools)
+            self.assertNotIn("tool_choice", request)
+        self.assertEqual(output["tool_calls"][0]["function"]["name"], "getWeather")
 
     def test_underspecified_new_object_yields_schema_clarification(self):
         tools = [tool(

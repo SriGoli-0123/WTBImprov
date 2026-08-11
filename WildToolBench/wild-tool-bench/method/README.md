@@ -1,6 +1,6 @@
 # Legacy Grounded experiment
 
-> **Current method:** GAVEL supersedes this wrapper. See
+> **Current method:** GAVEL-v2 supersedes this wrapper. See
 > [`method/GAVEL.md`](GAVEL.md) for the evaluator-free, no-added-instructions
 > implementation and direct run commands. This file is retained so the
 > previous full result remains reproducible.
