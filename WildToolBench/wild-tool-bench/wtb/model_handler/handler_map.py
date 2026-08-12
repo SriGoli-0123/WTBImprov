@@ -7,6 +7,7 @@ from .api_inference.grounded import GroundedHandler
 from .api_inference.gavel import GavelHandler
 from .api_inference.concord import ConcordHandler
 from .api_inference.prism import PrismHandler
+from .api_inference.igar_v25 import IGARV25Handler
 
 
 api_inference_handler_map = {
@@ -37,6 +38,8 @@ if _METHOD in {"igar", "igar_v24"}:
     # IGAR-v24 is implemented in BaseHandler, exactly as in commit ff3d4a1.
     # Selecting the stock OpenAI-compatible handler activates that runtime.
     _DEFAULT = OpenAIHandler
+elif _METHOD == "igar_v25":
+    _DEFAULT = IGARV25Handler
 elif _METHOD == "prism":
     _DEFAULT = PrismHandler
 elif _METHOD == "concord":
