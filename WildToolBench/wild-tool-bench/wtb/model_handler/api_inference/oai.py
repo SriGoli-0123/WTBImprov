@@ -13,12 +13,19 @@ class OpenAIHandler(BaseHandler):
         self.client = OpenAI(
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
-            timeout=300.0,
+            timeout=60.0,
         )
 
     @retry_with_backoff(RateLimitError)
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
+        # Measured on result_igar_v3 (1767 generations): median 90 tokens,
+        # 99th pct 716, but 5 generations reached the old 2048 cap on long
+        # nested tool calls. Headroom is free - nothing else generates near it.
+        # Note this does NOT address the common truncations in the vLLM log:
+        # those stop around the median, i.e. the model self-terminates
+        # mid-JSON far below any cap. Only constrained decoding fixes those.
+        kwargs.setdefault("max_tokens", int(os.getenv("WTB_MAX_TOKENS", "4096")))
         api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
 
@@ -35,6 +42,67 @@ class OpenAIHandler(BaseHandler):
         )
 
         return api_response, latency
+
+    def _request_text_only(self, inference_data):
+        '''
+        Re-ask the model on the same conversation with tool calling disabled, so
+        it must respond in words. Used by the ask-instead-of-guess gate: the
+        clarifying question stays authored by the model, never by the harness.
+        '''
+        api_response, _ = self.generate_with_backoff(
+            messages=inference_data["messages"],
+            model=self.model_name,
+            temperature=self.temperature,
+            tools=inference_data["tools"],
+            tool_choice="none",
+        )
+        return json.loads(api_response.json())["choices"][0]["message"].get("content")
+
+    def _request_candidates(self, inference_data, n, temperature):
+        '''
+        Draw n diversity samples for consensus decoding. Tries a single request
+        with the OpenAI `n` parameter (vLLM prefills the prompt once), falling
+        back to sequential requests if the server rejects it.
+        '''
+        try:
+            api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
+                n=n,
+            )
+            response_data = json.loads(api_response.json())
+            usage = response_data.get("usage") or {}
+            candidates = []
+            for i, choice in enumerate(response_data["choices"]):
+                message = choice["message"]
+                candidates.append({
+                    "reasoning_content": message.get("reasoning_content", None),
+                    "content": message.get("content", None),
+                    "tool_calls": message.get("tool_calls", None),
+                    # The batched request reports usage once; attribute it to the
+                    # first candidate so aggregated totals stay accurate.
+                    "input_token": usage.get("prompt_tokens", 0) if i == 0 else 0,
+                    "output_token": usage.get("completion_tokens", 0) if i == 0 else 0,
+                    "latency": latency if i == 0 else 0,
+                })
+            return candidates
+        except Exception as e:
+            print(f"Batched n={n} sampling failed ({e}); sampling sequentially.", flush=True)
+
+        candidates = []
+        for _ in range(n):
+            api_response, latency = self.generate_with_backoff(
+                messages=inference_data["messages"],
+                model=self.model_name,
+                temperature=temperature,
+                tools=inference_data["tools"],
+            )
+            candidate = self._parse_api_response(api_response)
+            candidate["latency"] = latency
+            candidates.append(candidate)
+        return candidates
 
     def _parse_api_response(self, api_response):
         api_response = json.loads(api_response.json())

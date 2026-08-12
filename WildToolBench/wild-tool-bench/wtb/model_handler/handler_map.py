@@ -33,7 +33,11 @@ except ImportError:
 # The method switch is deliberately external to the benchmark input.  It
 # changes the handler, never the system prompt or tool descriptions.
 _METHOD = os.getenv("WTB_METHOD", "").lower()
-if _METHOD == "prism":
+if _METHOD in {"igar", "igar_v24"}:
+    # IGAR-v24 is implemented in BaseHandler, exactly as in commit ff3d4a1.
+    # Selecting the stock OpenAI-compatible handler activates that runtime.
+    _DEFAULT = OpenAIHandler
+elif _METHOD == "prism":
     _DEFAULT = PrismHandler
 elif _METHOD == "concord":
     _DEFAULT = ConcordHandler
