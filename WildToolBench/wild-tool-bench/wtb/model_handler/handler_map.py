@@ -8,6 +8,7 @@ from .api_inference.gavel import GavelHandler
 from .api_inference.concord import ConcordHandler
 from .api_inference.prism import PrismHandler
 from .api_inference.igar_v25 import IGARV25Handler
+from .api_inference.igar_v26 import IGARV26Handler
 
 
 api_inference_handler_map = {
@@ -31,8 +32,8 @@ try:
 except ImportError:
     pass
 
-# The method switch is deliberately external to the benchmark input.  It
-# changes the handler, never the system prompt or tool descriptions.
+# The method switch is external to the benchmark input. IGAR-v26 additionally
+# verifies that its model-facing messages are the unmodified stock WTB form.
 _METHOD = os.getenv("WTB_METHOD", "").lower()
 if _METHOD in {"igar", "igar_v24"}:
     # IGAR-v24 is implemented in BaseHandler, exactly as in commit ff3d4a1.
@@ -40,6 +41,8 @@ if _METHOD in {"igar", "igar_v24"}:
     _DEFAULT = OpenAIHandler
 elif _METHOD == "igar_v25":
     _DEFAULT = IGARV25Handler
+elif _METHOD == "igar_v26":
+    _DEFAULT = IGARV26Handler
 elif _METHOD == "prism":
     _DEFAULT = PrismHandler
 elif _METHOD == "concord":

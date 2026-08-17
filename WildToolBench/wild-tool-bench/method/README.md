@@ -1,10 +1,12 @@
-# Legacy Grounded experiment
+# Method index
 
-> **Current method:** PRISM supersedes CONCORD, GAVEL-v2, and this wrapper. See
-> [`method/PRISM.md`](PRISM.md) for the evaluator-free mechanism that resets
-> policy inertia using only exact messages already present in the model input.
-> CONCORD and GAVEL-v2 remain documented as ablations. This file is retained so
-> the previous Grounded result remains reproducible.
+> **Current experiment:** [IGAR-v26](IGAR_V26.md) is the prompt-invariant
+> continuation of IGAR-v24/v25. It restores stock WTB messages and performs
+> documentation, provenance, and continuity checks outside the model. PRISM,
+> CONCORD, GAVEL-v2, and Grounded remain available as ablations; their earlier
+> results and instructions are retained below for reproducibility.
+
+## Legacy Grounded experiment
 
 # Deciding whether to act, before deciding how to act
 
